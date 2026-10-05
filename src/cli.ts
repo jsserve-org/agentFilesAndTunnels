@@ -99,10 +99,10 @@ async function main() {
 Commands:
   login --server URL               Authorize this agent in your browser (OAuth device flow)
   connect                          Keep this laptop connected; reconnect automatically
-  create http|tcp --local-port PORT Create a tunnel for the selected agent
+  create http|tcp --local-port PORT Create a tunnel; optional --name my-demo
   list                             List active tunnel reservations
   stop TUNNEL_ID                   Close a tunnel and all its connections
-  upload FILE_PATH                 Upload a file and print its download link
+  upload FILE_PATH [--permanent]   Upload for 72 hours, or keep until deleted
   deploy ZIP --name NAME            Host a static site (login required by default)
   sites                            List hosted sites
   delete-site SITE_ID               Delete a hosted site and its files
@@ -269,6 +269,7 @@ stop and upload; an agent token can manage only its own tunnels.`);
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent_id: agent,
+        name: opt("name"),
         kind,
         local_port: localPort,
         local_host: localHost,
@@ -287,10 +288,11 @@ stop and upload; an agent token can manage only its own tunnels.`);
   }
   if (command === "upload") {
     const path = args[1];
-    if (!path) throw new Error("Usage: upload FILE_PATH");
+    if (!path) throw new Error("Usage: upload FILE_PATH [--permanent]");
     const file = await openAsBlob(path);
     const form = new FormData();
     form.set("file", file, path.split(/[\\/]/).pop() || "file");
+    form.set("permanent", String(args.includes("--permanent")));
     console.log(
       JSON.stringify(
         await api("/files", { method: "POST", body: form }),

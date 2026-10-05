@@ -1,5 +1,7 @@
 import {
   sitesDomain,
+  tunnelsDomain,
+  tunnelURLMode,
   filesHost,
   filesOrigin,
   validHostname,
@@ -7,7 +9,7 @@ import {
 import { serve } from "@hono/node-server";
 import { WebSocket as AgentSocket, WebSocketServer } from "ws";
 import { openAsBlob } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { writeFile, readFile } from "node:fs/promises";
 import { accountAuth, issueKey, revokeKey } from "./auth.ts";
 import {
@@ -236,7 +238,7 @@ function isLocalHost(host: string) {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 function tunnelUrl(t: Tunnel) {
-  return `${new URL(publicOrigin).protocol}//${t.id}.${baseDomain}`;
+  return `${new URL(publicOrigin).protocol}//${t.public_slug || t.id}.${tunnelsDomain()}`;
 }
 function showTunnel(t: Tunnel) {
   return {
@@ -244,6 +246,14 @@ function showTunnel(t: Tunnel) {
     online: connections.has(t.agent_id),
     url: t.kind === "http" ? tunnelUrl(t) : null,
     address: t.kind === "tcp" ? `${tcpPublicHost()}:${t.public_port}` : null,
+  };
+}
+function showFile(file: StoredFile) {
+  return {
+    ...file,
+    expires_at: file.expires_at === 0 ? null : file.expires_at,
+    permanent: file.expires_at === 0,
+    url: fileUrl(file.id),
   };
 }
 function fileUrl(fileId: string) {
@@ -358,11 +368,38 @@ function stopTunnel(t: Tunnel) {
       });
     }
 }
+function allocateTunnelSlug(name: string, tunnelId: string): string {
+  if (tunnelURLMode() === "uuid") return tunnelId;
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const suffix = Array.from(
+      { length: 8 },
+      () => alphabet[randomInt(alphabet.length)],
+    ).join("");
+    const slug = tunnelURLMode() === "named" ? `${name}-${suffix}` : suffix;
+    if (
+      !db
+        .prepare("SELECT id FROM tunnels WHERE public_slug=? OR id=?")
+        .get(slug, slug)
+    )
+      return slug;
+  }
+  throw Error("Could not allocate a unique tunnel URL.");
+}
 async function createTunnel(user: Principal, payload: Record<string, unknown>) {
   const agentId = string(payload.agent_id, 64),
     kind = payload.kind;
   const host = string(payload.local_host || "127.0.0.1", 100);
   const localPort = Number(payload.local_port);
+  const tunnelName =
+    payload.name === undefined || payload.name === "" ? "tunnel" : payload.name;
+  if (
+    typeof tunnelName !== "string" ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(tunnelName)
+  )
+    return fail(
+      "Tunnel name must be 1–40 lowercase letters, digits or hyphens, starting and ending with a letter or digit.",
+    );
   if (
     !agentId ||
     !host ||
@@ -411,8 +448,11 @@ async function createTunnel(user: Principal, payload: Record<string, unknown>) {
       }
     if (!publicPort) return fail("No public TCP ports available.", 503);
   }
+  const tunnelId = id();
   const t: Tunnel = {
-    id: id(),
+    id: tunnelId,
+    public_slug:
+      kind === "http" ? allocateTunnelSlug(tunnelName, tunnelId) : null,
     user_id: user.id,
     agent_id: agentId,
     kind,
@@ -422,7 +462,9 @@ async function createTunnel(user: Principal, payload: Record<string, unknown>) {
     created_at: now(),
     stopped_at: null,
   };
-  db.prepare("INSERT INTO tunnels VALUES (?,?,?,?,?,?,?,?,?)").run(
+  db.prepare(
+    "INSERT INTO tunnels (id,user_id,agent_id,kind,local_host,local_port,public_port,created_at,stopped_at,public_slug) VALUES (?,?,?,?,?,?,?,?,?,?)",
+  ).run(
     t.id,
     t.user_id,
     t.agent_id,
@@ -432,6 +474,7 @@ async function createTunnel(user: Principal, payload: Record<string, unknown>) {
     t.public_port,
     t.created_at,
     t.stopped_at,
+    t.public_slug,
   );
   try {
     await listenTcp(t);
@@ -447,14 +490,23 @@ async function createTunnel(user: Principal, payload: Record<string, unknown>) {
 async function upload(request: Request, user: User) {
   const contentType = request.headers.get("content-type") || "";
   let filename: string, bytes: Uint8Array, type: string;
+  let permanent = false;
   if (contentType.includes("multipart/form-data")) {
     const form = await request.formData();
+    const keep = form.get("permanent");
+    if (keep !== null && keep !== "true" && keep !== "false")
+      return fail("permanent must be true or false.");
+    permanent = keep === "true";
     const file = form.get("file");
     if (!(file instanceof File)) return fail("Attach a file field.");
     filename = file.name;
     type = file.type || "application/octet-stream";
     bytes = new Uint8Array(await file.arrayBuffer());
   } else {
+    const keep = request.headers.get("x-file-permanent");
+    if (keep !== null && keep !== "true" && keep !== "false")
+      return fail("x-file-permanent must be true or false.");
+    permanent = keep === "true";
     filename = request.headers.get("x-file-name") || "file";
     type = contentType || "application/octet-stream";
     bytes = new Uint8Array(await request.arrayBuffer());
@@ -468,7 +520,7 @@ async function upload(request: Request, user: User) {
     return fail("Account file storage limit reached.", 413);
   const fileId = id(),
     created = now(),
-    expires = created + retention;
+    expires = permanent ? 0 : created + retention;
   db.prepare("INSERT INTO files VALUES (?,?,?,?,?,?,?)").run(
     fileId,
     user.id,
@@ -490,7 +542,8 @@ async function upload(request: Request, user: User) {
       name: filename,
       size: bytes.length,
       url: fileUrl(fileId),
-      expires_at: expires,
+      expires_at: permanent ? null : expires,
+      permanent,
     },
     201,
   );
@@ -613,6 +666,10 @@ async function mcp(request: Request, user: Principal) {
               kind: { type: "string", enum: ["http", "tcp"] },
               local_port: { type: "integer" },
               local_host: { type: "string" },
+              name: {
+                type: "string",
+                description: "URL name prefix for named mode (default tunnel)",
+              },
             },
             required: ["agent_id", "kind", "local_port"],
           },
@@ -661,13 +718,18 @@ async function mcp(request: Request, user: Principal) {
         },
         {
           name: "upload_file",
-          description: "Upload base64 file content for at least 72 hours",
+          description:
+            "Upload base64 file content; keep at least 72 hours or until deleted",
           inputSchema: {
             type: "object",
             properties: {
               name: { type: "string" },
               content_base64: { type: "string" },
               content_type: { type: "string" },
+              permanent: {
+                type: "boolean",
+                description: "Keep until deleted (default false)",
+              },
             },
             required: ["name", "content_base64"],
           },
@@ -751,14 +813,16 @@ async function mcp(request: Request, user: Principal) {
     output = (
       db
         .prepare(
-          "SELECT * FROM files WHERE user_id=? AND expires_at>? ORDER BY created_at DESC",
+          "SELECT * FROM files WHERE user_id=? AND (expires_at=0 OR expires_at>?) ORDER BY created_at DESC",
         )
         .all(user.id, now()) as StoredFile[]
-    ).map((f) => ({ ...f, url: fileUrl(f.id) }));
+    ).map(showFile);
   else if (name === "upload_file") {
     const nameValue = string(args.name, 255),
       content = string(args.content_base64, maxFile * 2);
-    if (!nameValue || !content)
+    if (args.permanent !== undefined && typeof args.permanent !== "boolean")
+      output = { error: "permanent must be boolean" };
+    else if (!nameValue || !content)
       output = { error: "name and content_base64 are required" };
     else {
       const bytes = Buffer.from(content, "base64");
@@ -768,6 +832,7 @@ async function mcp(request: Request, user: Principal) {
             method: "POST",
             headers: {
               "x-file-name": nameValue,
+              "x-file-permanent": String(args.permanent === true),
               "content-type":
                 string(args.content_type, 100) || "application/octet-stream",
             },
@@ -800,7 +865,7 @@ async function handleRequest(request: Request): Promise<Response> {
       path = url.pathname;
     const host = url.hostname.toLowerCase();
     const controlHost = new URL(publicOrigin).hostname.toLowerCase();
-    const suffix = `.${baseDomain.toLowerCase()}`;
+    const suffix = `.${tunnelsDomain()}`;
     const siteSuffix = `.${sitesDomain()}`;
     if (host !== controlHost && host.endsWith(siteSuffix)) {
       const siteId = host.slice(0, -siteSuffix.length);
@@ -808,11 +873,7 @@ async function handleRequest(request: Request): Promise<Response> {
         ? (db.prepare("SELECT * FROM sites WHERE id=?").get(siteId.slice(2)) as
             Site | undefined)
         : undefined;
-      if (
-        site ||
-        sitesDomain() !== baseDomain.toLowerCase() ||
-        siteId.startsWith("s-")
-      )
+      if (site || sitesDomain() !== tunnelsDomain() || /^s-[a-f0-9]{32}$/.test(siteId))
         return site
           ? await serveSite(request, site)
           : fail("Site not found.", 404);
@@ -821,9 +882,9 @@ async function handleRequest(request: Request): Promise<Response> {
       const tunnelId = host.slice(0, -suffix.length);
       const t = db
         .prepare(
-          "SELECT * FROM tunnels WHERE id=? AND kind='http' AND stopped_at IS NULL",
+          "SELECT * FROM tunnels WHERE (public_slug=? OR id=?) AND kind='http' AND stopped_at IS NULL",
         )
-        .get(tunnelId) as Tunnel | null;
+        .get(tunnelId, tunnelId) as Tunnel | null;
       return t ? await proxyHttp(request, t) : fail("Tunnel not found.", 404);
     }
     if (path === "/health") return json({ ok: true });
@@ -886,7 +947,9 @@ async function handleRequest(request: Request): Promise<Response> {
       );
     if (path.startsWith("/f/") && ["GET", "HEAD"].includes(request.method)) {
       const f = db
-        .prepare("SELECT * FROM files WHERE id=? AND expires_at>?")
+        .prepare(
+          "SELECT * FROM files WHERE id=? AND (expires_at=0 OR expires_at>?)",
+        )
         .get(path.slice(3), now()) as StoredFile | null;
       if (!f) return fail("File not found or expired.", 404);
       const file = await openAsBlob(join(filesDir, f.id)).catch(() => null);
@@ -912,6 +975,8 @@ async function handleRequest(request: Request): Promise<Response> {
               .get() as { value: string }
           ).value === "true",
         tcp_public_host: tcpPublicHost(),
+        tunnels_base_domain: tunnelsDomain(),
+        tunnel_url_mode: tunnelURLMode(),
         sites_base_domain: sitesDomain(),
         files_public_host: filesHost(),
         tcp_port_start: tcpStart,
@@ -1104,7 +1169,7 @@ async function handleRequest(request: Request): Promise<Response> {
                   "SELECT files.*,users.email FROM files JOIN users ON users.id=files.user_id ORDER BY created_at DESC",
                 )
                 .all() as (StoredFile & { email: string })[]
-            ).map((file) => ({ ...file, url: fileUrl(file.id) })),
+            ).map(showFile),
             agents: db
               .prepare(
                 "SELECT agents.id,agents.label,agents.user_id,users.email FROM agents JOIN users ON users.id=agents.user_id ORDER BY agents.created_at DESC",
@@ -1227,6 +1292,8 @@ async function handleRequest(request: Request): Promise<Response> {
                 .get() as { value: string }
             ).value === "true",
           tcp_public_host: tcpPublicHost(),
+          tunnels_base_domain: tunnelsDomain(),
+          tunnel_url_mode: tunnelURLMode(),
           sites_base_domain: sitesDomain(),
           files_public_host: filesHost(),
           tcp_port_start: tcpStart,
@@ -1241,6 +1308,7 @@ async function handleRequest(request: Request): Promise<Response> {
           return fail("registration_enabled must be boolean");
         for (const key of [
           "tcp_public_host",
+          "tunnels_base_domain",
           "sites_base_domain",
           "files_public_host",
         ]) {
@@ -1249,13 +1317,23 @@ async function handleRequest(request: Request): Promise<Response> {
               `${key} must be a hostname without a scheme, wildcard or port.`,
             );
         }
+        if (
+          data.tunnel_url_mode !== undefined &&
+          !["named", "random", "uuid"].includes(String(data.tunnel_url_mode))
+        )
+          return fail("tunnel_url_mode must be named, random or uuid.");
         db.transaction(() => {
+          if (data.tunnel_url_mode !== undefined)
+            db.prepare(
+              "INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ).run("tunnel_url_mode", data.tunnel_url_mode);
           if (data.registration_enabled !== undefined)
             db.prepare(
               "UPDATE settings SET value=? WHERE key='registration_enabled'",
             ).run(String(data.registration_enabled));
           for (const key of [
             "tcp_public_host",
+            "tunnels_base_domain",
             "sites_base_domain",
             "files_public_host",
           ]) {
@@ -1400,10 +1478,10 @@ async function handleRequest(request: Request): Promise<Response> {
           (
             db
               .prepare(
-                "SELECT * FROM files WHERE user_id=? AND expires_at>? ORDER BY created_at DESC",
+                "SELECT * FROM files WHERE user_id=? AND (expires_at=0 OR expires_at>?) ORDER BY created_at DESC",
               )
               .all(user.id, now()) as StoredFile[]
-          ).map((f) => ({ ...f, url: fileUrl(f.id) })),
+          ).map(showFile),
         );
       if (path === "/api/files" && request.method === "POST")
         return upload(request, user);
@@ -1583,7 +1661,7 @@ server.on("upgrade", (incoming, socket, head) => {
 
 setInterval(() => {
   const expired = db
-    .prepare("SELECT id FROM files WHERE expires_at<=?")
+    .prepare("SELECT id FROM files WHERE expires_at<>0 AND expires_at<=?")
     .all(now()) as { id: string }[];
   for (const file of expired) {
     try {

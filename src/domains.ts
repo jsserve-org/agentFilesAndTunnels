@@ -11,6 +11,12 @@ export function domainSetting(key: string, fallback: string): string {
     )?.value || fallback
   ).toLowerCase();
 }
+export function tunnelsDomain(): string {
+  return domainSetting(
+    "tunnels_base_domain",
+    process.env.BASE_DOMAIN || origin.hostname,
+  );
+}
 export function sitesDomain(): string {
   return domainSetting(
     "sites_base_domain",
@@ -43,4 +49,9 @@ export function validHostname(value: unknown): value is string {
           !part.endsWith("-"),
       )
   );
+}
+
+export type TunnelURLMode = "named" | "random" | "uuid";
+export function tunnelURLMode(): TunnelURLMode {
+  return domainSetting("tunnel_url_mode", "named") as TunnelURLMode;
 }

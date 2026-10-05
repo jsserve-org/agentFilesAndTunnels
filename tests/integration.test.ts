@@ -1075,17 +1075,17 @@ test("admin can change the advertised TCP hostname without changing reserved por
     ).status,
   ).toBe(400);
   const saved = await request("/api/admin/settings", "PATCH", {
-    tcp_public_host: "direct-tunnel.2oo.dev",
+    tcp_public_host: "tcp.example.com",
   });
   expect(saved.status).toBe(200);
   expect(
     ((await saved.json()) as { tcp_public_host: string }).tcp_public_host,
-  ).toBe("direct-tunnel.2oo.dev");
+  ).toBe("tcp.example.com");
   const config = (await (await fetch(`${origin}/api/config`)).json()) as {
     tcp_public_host: string;
     tcp_port_start: number;
   };
-  expect(config.tcp_public_host).toBe("direct-tunnel.2oo.dev");
+  expect(config.tcp_public_host).toBe("tcp.example.com");
   expect(config.tcp_port_start).toBe(tcpPort);
   serverProcess.kill();
   await serverProcess.exited;
@@ -1096,7 +1096,7 @@ test("admin can change the advertised TCP hostname without changing reserved por
         tcp_public_host: string;
       }
     ).tcp_public_host,
-  ).toBe("direct-tunnel.2oo.dev");
+  ).toBe("tcp.example.com");
   await request("/api/admin/settings", "PATCH", {
     tcp_public_host: original.tcp_public_host,
   });
@@ -1228,15 +1228,15 @@ test("separate content domains serve sites and files without exposing panel APIs
   expect(
     (
       await request("/api/admin/settings", "PATCH", {
-        sites_base_domain: "*.ugsites.2oo.dev",
+        sites_base_domain: "*.sites.example.com",
       })
     ).status,
   ).toBe(400);
   expect(
     (
       await request("/api/admin/settings", "PATCH", {
-        sites_base_domain: "ugsites.2oo.dev",
-        files_public_host: "ugfiles.2oo.dev",
+        sites_base_domain: "sites.example.com",
+        files_public_host: "files.example.com",
       })
     ).status,
   ).toBe(200);
@@ -1244,10 +1244,15 @@ test("separate content domains serve sites and files without exposing panel APIs
     "index.html": strToU8("Separate website domain"),
   });
   const site = (await deployed.json()) as { id: string; url: string };
-  expect(site.url).toBe(`http://s-${site.id}.ugsites.2oo.dev`);
+  expect(site.url).toBe(`http://s-${site.id}.sites.example.com`);
   expect(
     await (
-      await siteRequest(site.id, "/", undefined, `s-${site.id}.ugsites.2oo.dev`)
+      await siteRequest(
+        site.id,
+        "/",
+        undefined,
+        `s-${site.id}.sites.example.com`,
+      )
     ).text(),
   ).toContain("Separate website domain");
   expect(
@@ -1256,20 +1261,26 @@ test("separate content domains serve sites and files without exposing panel APIs
         site.id,
         "/api/me",
         cookie,
-        `s-${site.id}.ugsites.2oo.dev`,
+        `s-${site.id}.sites.example.com`,
       )
     ).status,
   ).toBe(404);
   expect((await siteRequest(site.id, "/", undefined)).status).toBe(404);
   await request(`/api/sites/${site.id}`, "PATCH", { visibility: "login" });
   expect(
-    (await siteRequest(site.id, "/", undefined, `s-${site.id}.ugsites.2oo.dev`))
-      .status,
+    (
+      await siteRequest(
+        site.id,
+        "/",
+        undefined,
+        `s-${site.id}.sites.example.com`,
+      )
+    ).status,
   ).toBe(303);
   const login = (await (
     await request(`/api/sites/${site.id}/login`, "POST", {})
   ).json()) as { url: string };
-  expect(new URL(login.url).hostname).toBe(`s-${site.id}.ugsites.2oo.dev`);
+  expect(new URL(login.url).hostname).toBe(`s-${site.id}.sites.example.com`);
   const form = new FormData();
   form.set("file", new File(["Dedicated file domain"], "domain.txt"));
   const uploaded = (await (
@@ -1279,17 +1290,17 @@ test("separate content domains serve sites and files without exposing panel APIs
       body: form,
     })
   ).json()) as { id: string; url: string };
-  expect(uploaded.url).toBe(`http://ugfiles.2oo.dev/f/${uploaded.id}`);
+  expect(uploaded.url).toBe(`http://files.example.com/f/${uploaded.id}`);
   expect(
     await (
-      await siteRequest("", `/f/${uploaded.id}`, undefined, "ugfiles.2oo.dev")
+      await siteRequest("", `/f/${uploaded.id}`, undefined, "files.example.com")
     ).text(),
   ).toBe("Dedicated file domain");
   expect(
-    (await siteRequest("", "/api/me", cookie, "ugfiles.2oo.dev")).status,
+    (await siteRequest("", "/api/me", cookie, "files.example.com")).status,
   ).toBe(404);
   expect(
-    (await siteRequest("", "/", undefined, "ugfiles.2oo.dev")).status,
+    (await siteRequest("", "/", undefined, "files.example.com")).status,
   ).toBe(404);
   serverProcess.kill();
   await serverProcess.exited;
@@ -1298,8 +1309,8 @@ test("separate content domains serve sites and files without exposing panel APIs
     sites_base_domain: string;
     files_public_host: string;
   };
-  expect(persisted.sites_base_domain).toBe("ugsites.2oo.dev");
-  expect(persisted.files_public_host).toBe("ugfiles.2oo.dev");
+  expect(persisted.sites_base_domain).toBe("sites.example.com");
+  expect(persisted.files_public_host).toBe("files.example.com");
   await request(`/api/sites/${site.id}`, "DELETE");
   await request(`/api/files/${uploaded.id}`, "DELETE");
   await request("/api/admin/settings", "PATCH", before);
@@ -1341,4 +1352,219 @@ test("site ZIPs ignore Finder metadata and unwrap one website folder", async () 
     ).status,
   ).toBe(400);
   await request(`/api/sites/${site.id}`, "DELETE");
+});
+
+test("permanent files survive restart, remain downloadable, and can be deleted", async () => {
+  const form = new FormData();
+  form.set("file", new File(["Keep this file"], "permanent.txt"));
+  form.set("permanent", "true");
+  const response = await fetch(origin + "/api/files", {
+    method: "POST",
+    headers: { cookie },
+    body: form,
+  });
+  expect(response.status).toBe(201);
+  const file = (await response.json()) as {
+    id: string;
+    url: string;
+    expires_at: null;
+    permanent: boolean;
+  };
+  expect(file.expires_at).toBeNull();
+  expect(file.permanent).toBe(true);
+  const rpc = await request("/mcp", "POST", {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "upload_file",
+      arguments: {
+        name: "permanent-mcp.txt",
+        content_base64: Buffer.from("MCP forever").toString("base64"),
+        permanent: true,
+      },
+    },
+  });
+  const result = (await rpc.json()) as {
+    result: { content: { text: string }[] };
+  };
+  const mcpFile = JSON.parse(result.result.content[0].text) as {
+    id: string;
+    expires_at: null;
+    permanent: boolean;
+  };
+  expect(mcpFile.expires_at).toBeNull();
+  expect(mcpFile.permanent).toBe(true);
+  serverProcess.kill();
+  await serverProcess.exited;
+  await startServer();
+  expect(await (await fetch(file.url)).text()).toBe("Keep this file");
+  const files = (await (await request("/api/files")).json()) as {
+    id: string;
+    expires_at: null;
+  }[];
+  expect(files.find((f) => f.id === file.id)?.expires_at).toBeNull();
+  const resources = (await (await request("/api/admin/resources")).json()) as {
+    files: { id: string; expires_at: null }[];
+  };
+  expect(resources.files.find((f) => f.id === file.id)?.expires_at).toBeNull();
+  expect((await request(`/api/files/${file.id}`, "DELETE")).status).toBe(200);
+  expect((await fetch(file.url)).status).toBe(404);
+  expect(
+    (await request(`/api/admin/files/${mcpFile.id}`, "DELETE")).status,
+  ).toBe(200);
+  const invalid = new FormData();
+  invalid.set("file", new File(["no"], "invalid.txt"));
+  invalid.set("permanent", "maybe");
+  expect(
+    (
+      await fetch(origin + "/api/files", {
+        method: "POST",
+        headers: { cookie },
+        body: invalid,
+      })
+    ).status,
+  ).toBe(400);
+});
+
+test("admin changes HTTP tunnel URLs while preserving reservations and reconnects", async () => {
+  const original = (await (await request("/api/admin/settings")).json()) as {
+    tunnels_base_domain: string;
+  };
+  const reservedAgent = (await (
+    await request("/api/agents", "POST", { label: "Domain change test" })
+  ).json()) as { id: string };
+  const created = await request("/api/tunnels", "POST", {
+    agent_id: reservedAgent.id,
+    kind: "http",
+    local_port: 3000,
+  });
+  expect(created.status).toBe(201);
+  const tunnel = (await created.json()) as { id: string; url: string };
+  expect(
+    (
+      await request("/api/admin/settings", "PATCH", {
+        tunnels_base_domain: "*.new-tunnel.example.com",
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await request("/api/admin/settings", "PATCH", {
+        tunnels_base_domain: "new-tunnel.example.com",
+      })
+    ).status,
+  ).toBe(200);
+  const list = (await (await request("/api/tunnels")).json()) as {
+    id: string;
+    url: string;
+  }[];
+  expect(list.find((t) => t.id === tunnel.id)?.url).toBe(
+    `http://${new URL(tunnel.url).hostname.split(".")[0]}.new-tunnel.example.com`,
+  );
+  expect(
+    (
+      await siteRequest(
+        "",
+        "/",
+        undefined,
+        `${tunnel.id}.new-tunnel.example.com`,
+      )
+    ).status,
+  ).not.toBe(404);
+  expect(
+    (await siteRequest("", "/", undefined, `${tunnel.id}.tunnel.test`)).status,
+  ).toBe(404);
+  serverProcess.kill();
+  await serverProcess.exited;
+  await startServer();
+  expect(
+    (
+      (await (await request("/api/admin/settings")).json()) as {
+        tunnels_base_domain: string;
+      }
+    ).tunnels_base_domain,
+  ).toBe("new-tunnel.example.com");
+  const offline = await siteRequest(
+    "",
+    "/",
+    undefined,
+    `${tunnel.id}.new-tunnel.example.com`,
+  );
+  expect(await offline.text()).toContain("This host is offline");
+  await request(`/api/tunnels/${tunnel.id}`, "DELETE");
+  await request(`/api/agents/${reservedAgent.id}`, "DELETE");
+  await request("/api/admin/settings", "PATCH", {
+    tunnels_base_domain: original.tunnels_base_domain,
+  });
+});
+
+test("admin URL modes create unique stable names and preserve legacy URLs", async () => {
+  const agent = (await (
+    await request("/api/agents", "POST", { label: "URL modes test" })
+  ).json()) as { id: string };
+  const created: { id: string; url: string }[] = [];
+  for (const mode of ["named", "random", "uuid"]) {
+    expect(
+      (await request("/api/admin/settings", "PATCH", { tunnel_url_mode: mode }))
+        .status,
+    ).toBe(200);
+    const response = await request("/api/tunnels", "POST", {
+      agent_id: agent.id,
+      kind: "http",
+      local_port: 3000,
+      name: "my-demo",
+    });
+    expect(response.status).toBe(201);
+    const tunnel = (await response.json()) as { id: string; url: string };
+    created.push(tunnel);
+    const label = new URL(tunnel.url).hostname.split(".")[0];
+    if (mode === "named") expect(label).toMatch(/^my-demo-[a-z0-9]{8}$/);
+    if (mode === "random") expect(label).toMatch(/^[a-z0-9]{8}$/);
+    if (mode === "uuid") expect(label).toBe(tunnel.id);
+    expect(
+      await (
+        await siteRequest("", "/", undefined, new URL(tunnel.url).hostname)
+      ).text(),
+    ).toContain("This host is offline");
+  }
+  expect(
+    (
+      await request("/api/tunnels", "POST", {
+        agent_id: agent.id,
+        kind: "http",
+        local_port: 3000,
+        name: "bad/name",
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await request("/api/admin/settings", "PATCH", {
+        tunnel_url_mode: "unsupported",
+      })
+    ).status,
+  ).toBe(400);
+  const database = new Database(join(dataDir, "app.sqlite"));
+  database
+    .prepare("UPDATE tunnels SET public_slug=NULL WHERE id=?")
+    .run(created[2].id);
+  database.close();
+  serverProcess.kill();
+  await serverProcess.exited;
+  await startServer();
+  const listed = (await (await request("/api/tunnels")).json()) as {
+    id: string;
+    url: string;
+  }[];
+  for (const tunnel of created) {
+    expect(listed.find((t) => t.id === tunnel.id)?.url).toBe(tunnel.url);
+    expect(
+      await (
+        await siteRequest("", "/", undefined, new URL(tunnel.url).hostname)
+      ).text(),
+    ).toContain("This host is offline");
+  }
+  await request("/api/agents/" + agent.id, "DELETE");
+  await request("/api/admin/settings", "PATCH", { tunnel_url_mode: "named" });
 });

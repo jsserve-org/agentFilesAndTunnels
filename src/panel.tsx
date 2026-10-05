@@ -84,6 +84,8 @@ type Usage = {
 type Config = {
   registration_enabled: boolean;
   tcp_public_host: string;
+  tunnels_base_domain: string;
+  tunnel_url_mode: "named" | "random" | "uuid";
   sites_base_domain: string;
   files_public_host: string;
   tcp_port_start: number;
@@ -114,7 +116,7 @@ type StoredFile = {
   name: string;
   size: number;
   url: string;
-  expires_at: number;
+  expires_at: number | null;
   email?: string;
 };
 type Account = {
@@ -655,45 +657,10 @@ function App() {
     );
   if (signedOut || !workspace)
     return (
-      <div className="grid min-h-screen lg:grid-cols-[1fr_1fr]">
-        <div className="relative hidden flex-col justify-between bg-[#eaf0fc] p-12 lg:flex">
-          <div className="flex items-center gap-3 text-lg font-semibold">
-            Relay
-          </div>
-          <div className="max-w-lg">
-            <Badge
-              variant="outline"
-              className="mb-6 border-blue-200 bg-white/60 text-primary"
-            >
-              Your laptop. A lasting link.
-            </Badge>
-            <h1 className="text-5xl font-semibold leading-[1.12]">
-              Local services,
-              <br />
-              open to the world.
-            </h1>
-            <p className="mt-6 max-w-md text-base leading-7 text-muted-foreground">
-              Publish a demo, hand a task to an agent, or share a file. Your
-              tunnel address stays assigned when your laptop disconnects.
-            </p>
-            <div className="mt-10 rounded-xl border border-blue-200 bg-white/70 p-5 font-mono text-sm">
-              <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
-                <SquareTerminal className="size-4" />A connection you approve
-              </div>
-              <div>relayoo login</div>
-              <div className="mt-2 text-primary">
-                ✓ Approved in your browser
-              </div>
-              <div className="mt-2">relayoo connect</div>
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Persistent tunnels · Temporary file sharing · Agent access
-          </p>
-        </div>
-        <main className="flex items-center justify-center p-6">
+      <div className="flex min-h-screen items-center justify-center">
+        <main className="flex w-full items-center justify-center p-6">
           <div className="w-full max-w-sm">
-            <div className="mb-10 flex items-center gap-2 font-semibold lg:hidden">
+            <div className="mb-10 flex items-center gap-2 font-semibold">
               Relay
             </div>
             <h1 className="text-2xl font-semibold">
@@ -945,7 +912,7 @@ function App() {
                   {bytes(f.size)}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
-                  {date(f.expires_at)}
+                  {f.expires_at === null ? "Until deleted" : date(f.expires_at)}
                 </TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1">
@@ -1106,8 +1073,8 @@ function App() {
           )
         }
       >
-        Upload a ZIP with index.html at its root or in one website folder. Choose whether visitors need a
-        platform account to view it.
+        Upload a ZIP with index.html at its root or in one website folder.
+        Choose whether visitors need a platform account to view it.
       </Empty>
     );
   }
@@ -1439,8 +1406,9 @@ function App() {
               </Card>
               <p className="mt-4 text-xs text-muted-foreground">
                 Maximum file size: {bytes(workspace.config.max_file_bytes)}.
-                Retention: {workspace.config.retention_hours} hours. Anyone with
-                a download link can access its file.
+                Default retention: {workspace.config.retention_hours} hours, or
+                keep until deleted. Anyone with a download link can access its
+                file.
               </p>
             </>
           )}
@@ -2108,7 +2076,7 @@ function App() {
                       id="sites-domain"
                       name="sites_base_domain"
                       defaultValue={workspace.config.sites_base_domain}
-                      placeholder="ugsites.2oo.dev"
+                      placeholder="sites.example.com"
                       required
                     />
                   </div>
@@ -2118,7 +2086,7 @@ function App() {
                       id="files-host"
                       name="files_public_host"
                       defaultValue={workspace.config.files_public_host}
-                      placeholder="ugfiles.2oo.dev"
+                      placeholder="files.example.com"
                       required
                     />
                   </div>
@@ -2131,6 +2099,82 @@ function App() {
                   </p>
                   <Button disabled={busy} type="submit">
                     Save content domains
+                  </Button>
+                </form>
+              </CardContent>
+              <Separator />
+              <CardHeader>
+                <CardTitle className="text-base">HTTP tunnel URLs</CardTitle>
+                <CardDescription>
+                  Each tunnel keeps its assigned URL name under this wildcard domain.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form
+                  key={
+                    workspace.config.tunnels_base_domain +
+                    workspace.config.tunnel_url_mode
+                  }
+                  className="space-y-4"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const fields = new FormData(event.currentTarget);
+                    void run(async () => {
+                      await api("/admin/settings", {
+                        method: "PATCH",
+                        body: JSON.stringify({
+                          tunnels_base_domain: fields.get(
+                            "tunnels_base_domain",
+                          ),
+                          tunnel_url_mode: fields.get("tunnel_url_mode"),
+                        }),
+                      });
+                      await refresh();
+                      notify("Tunnel domain updated.");
+                    });
+                  }}
+                >
+                  <div className="space-y-2">
+                    <Label htmlFor="tunnels-domain">
+                      HTTP tunnel base domain
+                    </Label>
+                    <Input
+                      id="tunnels-domain"
+                      name="tunnels_base_domain"
+                      defaultValue={workspace.config.tunnels_base_domain}
+                      placeholder="tunnel.example.com"
+                      required
+                    />
+                  </div>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    Enter the base domain without https:// or *. Configure its
+                    wildcard DNS and HTTPS proxy to reach this server. Saving
+                    updates all tunnel URLs immediately; tunnel IDs, reserved
+                    ports and agent connections stay the same.
+                  </p>
+                  <div className="space-y-2">
+                    <Label htmlFor="tunnel-url-mode">
+                      New tunnel URL format
+                    </Label>
+                    <select
+                      id="tunnel-url-mode"
+                      name="tunnel_url_mode"
+                      defaultValue={workspace.config.tunnel_url_mode}
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    >
+                      <option value="named">
+                        Name + 8 random letters or digits
+                      </option>
+                      <option value="random">8 random letters or digits</option>
+                      <option value="uuid">UUID</option>
+                    </select>
+                    <p className="text-xs text-muted-foreground">
+                      Applies to new tunnels. Existing URL names remain
+                      assigned.
+                    </p>
+                  </div>
+                  <Button type="submit" disabled={busy}>
+                    Save tunnel domain
                   </Button>
                 </form>
               </CardContent>
@@ -2170,7 +2214,7 @@ function App() {
                       id="tcp-public-host"
                       name="tcp_public_host"
                       defaultValue={workspace.config.tcp_public_host}
-                      placeholder="direct-tunnel.2oo.dev"
+                      placeholder="tcp.example.com"
                       required
                     />
                   </div>
@@ -2223,7 +2267,7 @@ function App() {
                       ? "Better Auth creates the account. Give the initial password to the user privately."
                       : modal === "site"
                         ? "Upload a ZIP containing index.html at its root or in one website folder. Site files share your account's storage allowance."
-                        : `Files are kept for ${workspace.config.retention_hours} hours, with a maximum size of ${bytes(workspace.config.max_file_bytes)}.`}
+                        : `Choose ${workspace.config.retention_hours}-hour retention or keep until deleted, with a maximum size of ${bytes(workspace.config.max_file_bytes)}.`}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -2243,6 +2287,7 @@ function App() {
                 if (modal === "tunnel") {
                   await post("/tunnels", {
                     agent_id: data.agent_id,
+                    name: data.name,
                     kind: data.kind,
                     local_port: Number(data.local_port),
                     local_host: "127.0.0.1",
@@ -2300,6 +2345,13 @@ function App() {
             )}
             {modal === "tunnel" && (
               <>
+                <Field
+                  label="Tunnel name"
+                  name="name"
+                  placeholder="my-demo"
+                  pattern="[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?"
+                  maxLength={40}
+                />
                 <div className="space-y-2">
                   <Label htmlFor="tunnel-agent">Agent</Label>
                   <select
@@ -2349,7 +2401,27 @@ function App() {
               </>
             )}
             {modal === "upload" && (
-              <Field label="Choose a file" name="file" type="file" required />
+              <>
+                <Field label="Choose a file" name="file" type="file" required />
+                <div className="space-y-2">
+                  <Label htmlFor="file-retention">Keep file</Label>
+                  <select
+                    id="file-retention"
+                    name="permanent"
+                    defaultValue="false"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  >
+                    <option value="false">
+                      {workspace.config.retention_hours} hours
+                    </option>
+                    <option value="true">Until deleted</option>
+                  </select>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    Anyone with the link can download it. Files kept until
+                    deleted still count toward your storage allowance.
+                  </p>
+                </div>
+              </>
             )}
             {modal === "site" && (
               <>
@@ -2561,7 +2633,9 @@ function App() {
     </SidebarProvider>
   );
 }
-createRoot(document.getElementById("root")!).render(<>
-  <App />
-  <Toaster position="top-right" richColors closeButton />
-</>);
+createRoot(document.getElementById("root")!).render(
+  <>
+    <App />
+    <Toaster position="top-right" richColors closeButton />
+  </>,
+);

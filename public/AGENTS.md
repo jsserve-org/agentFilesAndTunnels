@@ -67,3 +67,7 @@ MCP: POST `/mcp` using JSON-RPC with `initialize`, `tools/list`, or `tools/call`
 Tell the user which connection process needs to remain running, the public addresses created, file expiry times, and how to stop any tunnel. Do not close a tunnel or the connection process while the user is still using the demo.
 
 Site uploads accept a ZIP root containing index.html or one enclosing website folder. Finder metadata (__MACOSX, .DS_Store and AppleDouble files) is ignored, and leading ./ paths are normalized. Hidden configuration files and traversal paths remain rejected.
+
+To keep a file until deleted, use `relayoo upload ./report.pdf --permanent`, multipart `permanent=true`, or MCP `upload_file` with `permanent: true`. Request this only when the user wants persistent storage. Such files still use the account storage allowance. Report `expires_at: null` as “kept until deleted”; anyone with its link can download it until the owner or administrator removes it.
+
+Use `relayoo create http --local-port 3000 --name my-demo` (or REST/MCP `name`) to suggest a URL prefix. The administrator chooses the URL format; always return the server-assigned URL. Prefixes allow 1–40 lowercase letters, digits and hyphens. The default mode generates name + 8 random characters; existing reservations keep their names when formats change.

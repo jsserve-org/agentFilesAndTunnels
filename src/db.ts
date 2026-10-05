@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS sites (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REF
 CREATE TABLE IF NOT EXISTS site_grants (token_hash TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL);
 INSERT OR IGNORE INTO settings(key,value) VALUES('registration_enabled','true');
 `);
+const tunnelColumns = db.prepare("PRAGMA table_info(tunnels)").all() as {
+  name: string;
+}[];
+if (!tunnelColumns.some((column) => column.name === "public_slug"))
+  db.exec("ALTER TABLE tunnels ADD COLUMN public_slug TEXT");
+db.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS tunnel_public_slug ON tunnels(public_slug) WHERE public_slug IS NOT NULL",
+);
 export const now = () => Date.now();
 export const id = () => crypto.randomUUID().replaceAll("-", "");
 export type User = { id: string; email: string };
@@ -39,6 +47,7 @@ export type Tunnel = {
   public_port: number | null;
   created_at: number;
   stopped_at: number | null;
+  public_slug: string | null;
 };
 export type Agent = {
   id: string;
@@ -53,5 +62,6 @@ export type StoredFile = {
   size: number;
   content_type: string;
   created_at: number;
+  // Zero means keep until deleted; public API serializes this as null.
   expires_at: number;
 };

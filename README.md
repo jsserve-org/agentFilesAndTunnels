@@ -237,9 +237,9 @@ Agents install with `curl -fsSL https://relay.example.com/install.sh | bash`, th
 
 ## Direct TCP hostname with multiple WANs
 
-Use one selected WAN for direct-tunnel.2oo.dev. Create a DNS A record pointing to that WAN's public IPv4 address (keep it updated when the address changes). Forward the configured TCP range, normally 20000–20099, on that WAN directly to the LXC's stable LAN address on the same ports. This hostname bypasses Nginx Proxy Manager; use DNS-only mode with providers that offer an HTTP proxy. Do not publish an AAAA record unless IPv6 routing is configured too.
+Use one selected WAN for tcp.example.com. Create a DNS A record pointing to that WAN's public IPv4 address (keep it updated when the address changes). Forward the configured TCP range, normally 20000–20099, on that WAN directly to the LXC's stable LAN address on the same ports. This hostname bypasses Nginx Proxy Manager; use DNS-only mode with providers that offer an HTTP proxy. Do not publish an AAAA record unless IPv6 routing is configured too.
 
-In the panel, open **Admin → Settings → Direct TCP forwarding**, enter direct-tunnel.2oo.dev, and save. Administrators can change it later; it is persisted in the database and overrides TCP_PUBLIC_HOST. GET/PATCH /api/admin/settings expose this setting as tcp_public_host. Existing reservations keep their ports and immediately advertise the new hostname. DNS and OpenWrt rules are managed separately. Changing the listening port range requires matching server environment, Docker port mappings (when using Docker), and router rules, then a restart.
+In the panel, open **Admin → Settings → Direct TCP forwarding**, enter tcp.example.com, and save. Administrators can change it later; it is persisted in the database and overrides TCP_PUBLIC_HOST. GET/PATCH /api/admin/settings expose this setting as tcp_public_host. Existing reservations keep their ports and immediately advertise the new hostname. DNS and OpenWrt rules are managed separately. Changing the listening port range requires matching server environment, Docker port mappings (when using Docker), and router rules, then a restart.
 
 ## Static hosting
 
@@ -253,12 +253,22 @@ MCP tools: list_tunnels, create_tunnel, stop_tunnel, list_files, upload_file, li
 
 ### Separate website and file domains
 
-In **Admin → Settings → Content domains**, set the website base domain to `ugsites.2oo.dev` (without `*.`) and the file download hostname to `ugfiles.2oo.dev`. These database settings persist across restarts and can be changed later. Environment defaults are `SITES_BASE_DOMAIN` and `FILES_PUBLIC_HOST`; if unset, existing installations keep their previous domains until configured in the panel.
+In **Admin → Settings → Content domains**, set the website base domain to `sites.example.com` (without `*.`) and the file download hostname to `files.example.com`. These database settings persist across restarts and can be changed later. Environment defaults are `SITES_BASE_DOMAIN` and `FILES_PUBLIC_HOST`; if unset, existing installations keep their previous domains until configured in the panel.
 
-Configure DNS for `*.ugsites.2oo.dev` and `ugfiles.2oo.dev` to reach Nginx Proxy Manager. Add an HTTPS proxy host for each, forwarding to the Relay LXC on port 3000. The wildcard website proxy needs a matching wildcard certificate (typically using a DNS challenge). Preserve the original Host header. Your panel and HTTP tunnel domains keep their existing proxy hosts.
+Configure DNS for `*.sites.example.com` and `files.example.com` to reach Nginx Proxy Manager. Add an HTTPS proxy host for each, forwarding to the Relay LXC on port 3000. The wildcard website proxy needs a matching wildcard certificate (typically using a DNS challenge). Preserve the original Host header. Your panel and HTTP tunnel domains keep their existing proxy hosts.
 
-Sites are published as `s-ID.ugsites.2oo.dev`; file links use `https://ugfiles.2oo.dev/f/ID`. The file hostname serves downloads only, without the platform panel or APIs. Existing panel-domain file links remain valid until expiry. Changing the website domain moves site URLs; visitors must log in on the new hostname. The login approval still happens on the panel domain through Better Auth's site-bound handoff.
+Sites are published as `s-ID.sites.example.com`; file links use `https://files.example.com/f/ID`. The file hostname serves downloads only, without the platform panel or APIs. Existing panel-domain file links remain valid until expiry. Changing the website domain moves site URLs; visitors must log in on the new hostname. The login approval still happens on the panel domain through Better Auth's site-bound handoff.
 
 The installer creates `~/.local/bin/relayoo` and adds the install directory to bash/zsh startup files. In the current shell, run `export PATH="$HOME/.local/bin:$PATH"`, then use `relayoo login` and `relayoo connect`. A piped installer cannot change the parent shell PATH.
 
 Site uploads accept a ZIP root containing index.html or one enclosing website folder. Finder metadata (__MACOSX, .DS_Store and AppleDouble files) is ignored, and leading ./ paths are normalized. Hidden configuration files and traversal paths remain rejected.
+
+### Files kept until deleted
+
+The file upload dialog offers the default retention period (at least 72 hours) or **Until deleted**. Permanent uploads count toward the same storage allowance and can be deleted by the owner or an administrator. Their public download links stay active until deletion; this does not replace backups.
+
+CLI: `relayoo upload ./report.pdf --permanent`. REST multipart uploads accept `permanent=true` (default false); raw uploads accept `X-File-Permanent: true`. MCP `upload_file` accepts an optional `permanent` boolean. Responses and file lists return `permanent: true` and `expires_at: null` for files kept until deleted. Existing expiring uploads keep their original expiry.
+
+Administrators can also change the HTTP tunnel base domain under **Settings → HTTP tunnel URLs** (`tunnels_base_domain` in GET/PATCH `/api/admin/settings`). Enter `tunnel.example.com`, without `*.` or a scheme. Set matching wildcard DNS and an HTTPS proxy. Changes persist, update all generated tunnel URLs, and preserve IDs, reservations and agent connections. `BASE_DOMAIN` is the default until overridden in the panel. Website and file domain settings remain separate.
+
+**Settings → HTTP tunnel URLs → New tunnel URL format** lets admins choose `named` (default: `my-demo-a7k2m9q4.tunnels.example.com`), `random` (8 lowercase letters/digits), or `uuid`. Set a prefix in the tunnel creation form, `relayoo create http --local-port 3000 --name my-demo`, or REST/MCP `name`. Names accept 1–40 lowercase letters, digits and hyphens; omitted names use `tunnel`. Random suffixes use cryptographic randomness and are checked for collisions. Format changes apply only to new tunnels. Existing URL names persist, including legacy UUID URLs. TCP tunnels continue to use their hostname and port. The mode is exposed as `tunnel_url_mode` in admin settings.
