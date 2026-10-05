@@ -12,7 +12,9 @@ Environment options:
   BASE_DOMAIN         Required wildcard base (tunnel.example.com; omit *.)
   TCP_PUBLIC_HOST     TCP hostname or IPv4 address (defaults to panel hostname)
   CTID                Next available ID by default
-  STORAGE             Active storage supporting rootdir (prompt/auto-select)
+  STORAGE             System/app storage supporting rootdir (prompt/auto-select)
+  DATA_STORAGE        Data volume storage supporting rootdir (defaults to STORAGE)
+  DATA_DISK_GB        Data volume size in GiB (default 100)
   TEMPLATE_STORAGE    Active storage supporting vztmpl (prompt/auto-select)
   TEMPLATE            Existing storage:vztmpl/template.tar.zst (optional)
   BRIDGE              vmbr0
@@ -73,10 +75,12 @@ TCP_PUBLIC_HOST=${TCP_PUBLIC_HOST:-$panel_host}; domain TCP_PUBLIC_HOST "$TCP_PU
 CTID=${CTID:-$(pvesh get /cluster/nextid)}
 BRIDGE=${BRIDGE:-vmbr0}; IP_ADDRESS=${IP_ADDRESS:-dhcp}
 CORES=${CORES:-2}; MEMORY=${MEMORY:-2048}; DISK_GB=${DISK_GB:-16}
+DATA_DISK_GB=${DATA_DISK_GB:-100}
 CT_HOSTNAME=${CT_HOSTNAME:-relay-desk}
 TCP_PORT_START=${TCP_PORT_START:-20000}; TCP_PORT_END=${TCP_PORT_END:-20099}
 number CTID "$CTID" 100 999999999
 number CORES "$CORES" 1 128; number MEMORY "$MEMORY" 512 1048576; number DISK_GB "$DISK_GB" 4 65536
+number DATA_DISK_GB "$DATA_DISK_GB" 1 65536
 number TCP_PORT_START "$TCP_PORT_START" 1024 65535; number TCP_PORT_END "$TCP_PORT_END" "$TCP_PORT_START" 65535
 domain CT_HOSTNAME "$CT_HOSTNAME"
 [[ $BRIDGE =~ ^[a-zA-Z0-9_.-]+$ ]] || die 'Invalid bridge name.'
@@ -90,6 +94,8 @@ if [[ $IP_ADDRESS != dhcp ]]; then
 fi
 if [[ -n ${VLAN_TAG:-} ]]; then number VLAN_TAG "$VLAN_TAG" 1 4094; net+=",tag=$VLAN_TAG"; fi
 select_storage STORAGE rootdir
+DATA_STORAGE=${DATA_STORAGE:-$STORAGE}
+select_storage DATA_STORAGE rootdir
 if [[ -z ${TEMPLATE:-} ]]; then
   select_storage TEMPLATE_STORAGE vztmpl
   pveam update
@@ -119,7 +125,8 @@ for file in package.json bun.lock src/server.ts deploy/relay.service; do
   grep -Eq "^[^/]+/$file$" "$workdir/entries" || die "Source archive is missing $file."
 done
 printf 'Creating unprivileged LXC %s on %s: %s cores, %s MiB RAM, %s GiB disk, %s\n' "$CTID" "$STORAGE" "$CORES" "$MEMORY" "$DISK_GB" "$IP_ADDRESS"
-pct create "$CTID" "$TEMPLATE" --hostname "$CT_HOSTNAME" --unprivileged 1 --cores "$CORES" --memory "$MEMORY" --swap 512 --rootfs "$STORAGE:$DISK_GB" --net0 "$net" --onboot 1 --description 'Relay desk: agent tunnels and file uploads'
+printf 'User data: %s GiB on %s, mounted at /var/lib/relay (included in backups).\n' "$DATA_DISK_GB" "$DATA_STORAGE"
+pct create "$CTID" "$TEMPLATE" --hostname "$CT_HOSTNAME" --unprivileged 1 --cores "$CORES" --memory "$MEMORY" --swap 512 --rootfs "$STORAGE:$DISK_GB" --mp0 "$DATA_STORAGE:$DATA_DISK_GB,mp=/var/lib/relay,backup=1" --net0 "$net" --onboot 1 --description 'Relay desk: agent tunnels and file uploads'
 created=true
 pct start "$CTID"
 for ((attempt=0; attempt<60; attempt++)); do
@@ -129,6 +136,7 @@ done
 pct push "$CTID" "$workdir/source.tar.gz" /root/relay-source.tar.gz --perms 0600
 pct exec "$CTID" -- env PUBLIC_ORIGIN="$PUBLIC_ORIGIN" BASE_DOMAIN="$BASE_DOMAIN" TCP_PUBLIC_HOST="$TCP_PUBLIC_HOST" TCP_PORT_START="$TCP_PORT_START" TCP_PORT_END="$TCP_PORT_END" bash -s <<'GUEST'
 set -Eeuo pipefail
+mountpoint -q /var/lib/relay || { echo 'Data volume is not mounted; refusing to write user data to the system disk.' >&2; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 apt-get -o Acquire::Retries=5 update
 apt-get -o Acquire::Retries=5 install -y ca-certificates curl unzip openssl

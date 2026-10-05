@@ -54,6 +54,16 @@ For a static address and specific storage, override settings in the same line:
 curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/proxmox-install.sh -o /tmp/relay-install.sh && PUBLIC_ORIGIN=https://relay.example.com BASE_DOMAIN=tunnel.example.com TCP_PUBLIC_HOST=ports.example.com STORAGE=local-lvm TEMPLATE_STORAGE=local CTID=120 IP_ADDRESS=192.168.1.90/24 GATEWAY=192.168.1.1 bash /tmp/relay-install.sh
 ```
 
+For your two-storage setup, put the OS, Bun and application on `local-lvm`, and user data on `fourtb`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/proxmox-install.sh -o /tmp/relay-install.sh && STORAGE=local-lvm DATA_STORAGE=fourtb DATA_DISK_GB=100 bash /tmp/relay-install.sh
+```
+
+This creates a 16 GiB root disk on `local-lvm` and a separate 100 GiB data volume on `fourtb`. Change `DATA_DISK_GB` to the capacity you want to allocate; it does not consume the entire four-terabyte pool. The data volume is mounted at `/var/lib/relay` and holds uploaded files, accounts, API key records, and tunnel reservations. The system disk holds `/opt/relay`, Bun, and `/etc/relay.env`. Include both volumes when backing up so the auth secret and database are preserved together. The data mount has `backup=1` enabled. Both selected storage pools must support Proxmox **Container** (`rootdir`) content; the installer checks this before creating a guest. Template storage is selected separately.
+
+`DATA_STORAGE` defaults to the system storage if omitted; the installer still creates a separate data volume (100 GiB by default). These settings apply to new containers only. They do not move data from an existing installation. You can expand the data volume later from Proxmox or with `pct resize CTID mp0 +100G`.
+
 Run `bash /tmp/relay-install.sh --help` for all options, including bridge, VLAN, CPU/RAM/disk, existing template, TCP range, and source revision. `SOURCE_REF` defaults to `master`; set a commit SHA for a fixed app revision. The download URL for the installer itself can also use that SHA. Existing containers are never overwritten. Failed installations preserve the new LXC for diagnosis rather than deleting its disk.
 
 For an installation without a controlling terminal, supply all required settings. The service starts with registration closed; finish account setup using `pct enter CTID`, then `/opt/relay/deploy/bootstrap-admin.sh`. That command also lets you retry if the initial password was invalid. The utility refuses to create a second administrator.
