@@ -121,7 +121,7 @@ cleanup() {
 trap cleanup EXIT
 curl --fail --location --retry 3 --output "$workdir/source.tar.gz" "$SOURCE_URL"
 tar -tzf "$workdir/source.tar.gz" > "$workdir/entries"
-for file in package.json bun.lock src/server.ts deploy/relay.service; do
+for file in package.json bun.lock src/server.ts deploy/relay.service deploy/lxc-finish.sh; do
   grep -Eq "^[^/]+/$file$" "$workdir/entries" || die "Source archive is missing $file."
 done
 printf 'Creating unprivileged LXC %s on %s: %s cores, %s MiB RAM, %s GiB disk, %s\n' "$CTID" "$STORAGE" "$CORES" "$MEMORY" "$DISK_GB" "$IP_ADDRESS"
@@ -136,6 +136,8 @@ done
 pct push "$CTID" "$workdir/source.tar.gz" /root/relay-source.tar.gz --perms 0600
 pct exec "$CTID" -- env PUBLIC_ORIGIN="$PUBLIC_ORIGIN" BASE_DOMAIN="$BASE_DOMAIN" TCP_PUBLIC_HOST="$TCP_PUBLIC_HOST" TCP_PORT_START="$TCP_PORT_START" TCP_PORT_END="$TCP_PORT_END" bash -s <<'GUEST'
 set -Eeuo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
 mountpoint -q /var/lib/relay || { echo 'Data volume is not mounted; refusing to write user data to the system disk.' >&2; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 apt-get -o Acquire::Retries=5 update
@@ -148,28 +150,7 @@ install -m 0755 /tmp/relay-bun/bun-linux-x64-baseline/bun /usr/local/bin/bun
 rm -rf /tmp/bun.zip /tmp/relay-bun
 tar -xzf /root/relay-source.tar.gz -C /opt/relay --strip-components=1 --no-same-owner
 rm /root/relay-source.tar.gz
-cd /opt/relay
-bun install --frozen-lockfile
-bun run build
-umask 077
-{
-  printf 'PUBLIC_ORIGIN=%s\nBASE_DOMAIN=%s\nTCP_PUBLIC_HOST=%s\n' "$PUBLIC_ORIGIN" "$BASE_DOMAIN" "$TCP_PUBLIC_HOST"
-  printf 'TCP_PORT_START=%s\nTCP_PORT_END=%s\nPORT=3000\n' "$TCP_PORT_START" "$TCP_PORT_END"
-  printf 'BETTER_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)"
-} > /etc/relay.env
-chown relay:relay /var/lib/relay
-# Close registration before listening. Bootstrap uses Better Auth after startup.
-DATA_DIR=/var/lib/relay bun -e 'import {db} from "./src/db.ts"; db.query("UPDATE settings SET value=? WHERE key=?").run("false","registration_enabled");'
-chown -R relay:relay /var/lib/relay
-install -m 0644 deploy/relay.service /etc/systemd/system/relay.service
-systemctl daemon-reload
-systemctl enable --now relay
-for ((attempt=0; attempt<60; attempt++)); do
-  if curl --fail --silent http://127.0.0.1:3000/health >/dev/null; then exit 0; fi
-  sleep 1
-done
-journalctl -u relay -n 40 --no-pager
-exit 1
+bash /opt/relay/deploy/lxc-finish.sh
 GUEST
 printf '\nService installed. Registration is closed until you create the first account.\n'
 pct exec "$CTID" -- hostname -I

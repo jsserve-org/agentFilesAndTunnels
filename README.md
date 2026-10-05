@@ -72,6 +72,14 @@ The Proxmox host needs Internet access and a storage pool supporting container d
 
 ### Manual installation inside an existing LXC
 
+If an installation stopped at `bun: command not found`, retain the container and its volumes. From the Proxmox host run `pct enter CTID`, then inside the container:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/lxc-finish.sh -o /tmp/relay-finish.sh && bash /tmp/relay-finish.sh
+```
+
+This recovery command uses `/usr/local/bin/bun`, sets a complete PATH and a valid locale, rebuilds the existing `/opt/relay` checkout, and starts the service. If `/etc/relay.env` does not exist yet, it asks for your domains and generates the secret. Existing configuration and data are preserved. After it succeeds, run `/opt/relay/deploy/bootstrap-admin.sh` to create the first administrator if needed. Recovery requires the data volume at `/var/lib/relay` and an already extracted checkout and Bun binary, as present at that failure point.
+
 Use a Debian/Ubuntu unprivileged LXC with a static LAN address, outbound Internet access, and a persistent disk sized for uploads. Install Bun 1.3.6 or newer and place its executable at `/usr/local/bin/bun`. Copy this project into `/opt/relay`, then inside the LXC as root:
 
 ```sh
