@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+import { Toaster } from "./components/ui/sonner";
 import * as React from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -6,9 +8,7 @@ import {
   ArrowUpRight,
   BookOpen,
   Cable,
-  Check,
   ChevronRight,
-  CircleHelp,
   Copy,
   File,
   FolderOpen,
@@ -25,7 +25,6 @@ import {
   SquareTerminal,
   Trash2,
   Users,
-  X,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import {
@@ -500,10 +499,6 @@ function App() {
   const [signedOut, setSignedOut] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [page, setPage] = React.useState<Page>(currentPage);
-  const [notice, setNotice] = React.useState<{
-    message: string;
-    error: boolean;
-  } | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [modal, setModal] = React.useState<
     "agent" | "key" | "tunnel" | "upload" | "user" | "site" | null
@@ -533,7 +528,7 @@ function App() {
   const [siteAccess, setSiteAccess] = React.useState<Site | null>(null);
   const [authMode, setAuthMode] = React.useState<"login" | "register">("login");
   const notify = (message: string, error = false) =>
-    setNotice({ message, error });
+    error ? toast.error(message, { duration: 8000 }) : toast.success(message);
   const refresh = React.useCallback(async () => {
     try {
       const me = await api<Workspace["me"]>("/me");
@@ -617,7 +612,7 @@ function App() {
     );
     setPage(target);
     setSearch("");
-    setNotice(null);
+    toast.dismiss();
   }
   async function copy(text: string) {
     await navigator.clipboard.writeText(text);
@@ -658,22 +653,6 @@ function App() {
         Loading your workspace…
       </div>
     );
-  const Notice = notice && (
-    <div
-      role={notice.error ? "alert" : "status"}
-      className={`mb-6 flex items-start gap-3 rounded-lg border px-4 py-3 text-sm ${notice.error ? "border-red-200 bg-red-50 text-red-800" : "border-blue-200 bg-blue-50 text-blue-900"}`}
-    >
-      {notice.error ? (
-        <CircleHelp className="mt-0.5 size-4 shrink-0" />
-      ) : (
-        <Check className="mt-0.5 size-4 shrink-0" />
-      )}
-      <span className="min-w-0 flex-1 break-words">{notice.message}</span>
-      <button aria-label="Dismiss notification" onClick={() => setNotice(null)}>
-        <X className="size-4" />
-      </button>
-    </div>
-  );
   if (signedOut || !workspace)
     return (
       <div className="grid min-h-screen lg:grid-cols-[1fr_1fr]">
@@ -717,7 +696,6 @@ function App() {
             <div className="mb-10 flex items-center gap-2 font-semibold lg:hidden">
               Relay
             </div>
-            {Notice}
             <h1 className="text-2xl font-semibold">
               {authMode === "login" ? "Welcome back" : "Create your account"}
             </h1>
@@ -1221,7 +1199,6 @@ function App() {
             </div>
             {pageAction}
           </div>
-          {Notice}
           {siteAccess && (
             <Card className="mb-6 border-blue-200 shadow-none">
               <CardHeader>
@@ -2584,4 +2561,7 @@ function App() {
     </SidebarProvider>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(<>
+  <App />
+  <Toaster position="top-right" richColors closeButton />
+</>);
