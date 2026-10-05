@@ -29,7 +29,7 @@ try {
       ". Registration remains closed; enable it from the panel when ready.",
   );
 } finally {
-  const ownership = spawnSync("chown", ["-R", "relay:relay", "/var/lib/relay"]);
+  const ownership = spawnSync("bash", ["/opt/relay/deploy/data-ownership.sh"]);
   if (ownership.status !== 0)
     throw new Error("Could not restore database ownership.");
 }

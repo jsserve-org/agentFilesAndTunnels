@@ -53,7 +53,7 @@ pnpm run build
 # Build scripts inherit the complete PATH above.
 id relay >/dev/null 2>&1 || useradd --system --home /var/lib/relay --shell /usr/sbin/nologin relay
 DATA_DIR=/var/lib/relay /usr/local/bin/node --import tsx --input-type=module -e 'import {db} from "./src/db.ts"; if(!db.prepare("SELECT value FROM settings WHERE key=?").get("admin_user_id"))db.prepare("UPDATE settings SET value=? WHERE key=?").run("false","registration_enabled");'
-chown -R relay:relay /var/lib/relay
+bash deploy/data-ownership.sh
 install -m 0644 deploy/relay.service /etc/systemd/system/relay.service
 systemctl daemon-reload
 systemctl enable relay
