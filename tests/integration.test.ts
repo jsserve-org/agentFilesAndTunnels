@@ -1304,3 +1304,41 @@ test("separate content domains serve sites and files without exposing panel APIs
   await request(`/api/files/${uploaded.id}`, "DELETE");
   await request("/api/admin/settings", "PATCH", before);
 });
+
+test("site ZIPs ignore Finder metadata and unwrap one website folder", async () => {
+  const uploaded = await deploySite({
+    "./public/index.html": strToU8("Finder website"),
+    "./public/assets/demo.js": strToU8("console.log('Finder asset')"),
+    "__MACOSX/._public": strToU8("resource fork"),
+    "__MACOSX/public/._index.html": strToU8("resource fork"),
+    "public/.DS_Store": strToU8("Finder metadata"),
+  });
+  expect(uploaded.status).toBe(201);
+  const site = (await uploaded.json()) as { id: string; size: number };
+  expect(await (await siteRequest(site.id, "/")).text()).toBe("Finder website");
+  expect(
+    await (await siteRequest(site.id, "/assets/demo.js")).text(),
+  ).toContain("Finder asset");
+  expect((await siteRequest(site.id, "/__MACOSX/._public")).status).toBe(404);
+  expect(site.size).toBe(
+    strToU8("Finder website").length +
+      strToU8("console.log('Finder asset')").length,
+  );
+  expect(
+    (
+      await deploySite({
+        "index.html": strToU8("demo"),
+        ".env": strToU8("secret"),
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await deploySite({
+        "index.html": strToU8("demo"),
+        "../hidden/.DS_Store": strToU8("metadata"),
+      })
+    ).status,
+  ).toBe(400);
+  await request(`/api/sites/${site.id}`, "DELETE");
+});

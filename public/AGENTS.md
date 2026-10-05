@@ -65,3 +65,5 @@ MCP: POST `/mcp` using JSON-RPC with `initialize`, `tools/list`, or `tools/call`
 ## Before finishing
 
 Tell the user which connection process needs to remain running, the public addresses created, file expiry times, and how to stop any tunnel. Do not close a tunnel or the connection process while the user is still using the demo.
+
+Site uploads accept a ZIP root containing index.html or one enclosing website folder. Finder metadata (__MACOSX, .DS_Store and AppleDouble files) is ignored, and leading ./ paths are normalized. Hidden configuration files and traversal paths remain rejected.

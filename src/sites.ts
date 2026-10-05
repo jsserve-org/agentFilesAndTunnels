@@ -48,26 +48,30 @@ function unzipSite(bytes: Uint8Array, maximum: number) {
   const unzip = new Unzip((file) => {
     if (++entries > 2000)
       throw new SiteError("A site can contain at most 2,000 entries.");
-    if (file.name.endsWith("/")) return;
-    const path = file.name;
+    const path = file.name.replace(/^(?:\.\/)+/, "");
+    const parts = path.replace(/\/$/, "").split("/");
     if (
       path.length > 512 ||
       path.startsWith("/") ||
       path.includes("\\") ||
-      path
-        .split("/")
-        .some(
-          (part) =>
-            !part ||
-            part === "." ||
-            part === ".." ||
-            part.startsWith(".") ||
-            part === "__relay",
-        ) ||
+      parts.some(
+        (part) => !part || part === "." || part === ".." || part === "__relay",
+      ) ||
       /[\x00-\x1f:]/.test(path)
     )
       throw new SiteError(
-        "ZIP contains an unsafe file path. Use relative paths without hidden files.",
+        "ZIP contains an unsafe file path. Use relative paths without traversal or reserved names.",
+      );
+    // Finder adds resource forks and directory metadata; they are not site assets.
+    if (
+      parts[0] === "__MACOSX" ||
+      parts.some((part) => part === ".DS_Store" || part.startsWith("._"))
+    )
+      return;
+    if (file.name.endsWith("/")) return;
+    if (parts.some((part) => part.startsWith(".")))
+      throw new SiteError(
+        `ZIP contains a hidden file: ${path}. Remove hidden configuration files before uploading.`,
       );
     if (files.has(path))
       throw new SiteError("ZIP contains duplicate file paths.");
@@ -102,8 +106,24 @@ function unzipSite(bytes: Uint8Array, maximum: number) {
       bytes.subarray(start, start + 4096),
       start + 4096 >= bytes.length,
     );
+  if (!files.has("index.html") && files.size) {
+    const folder = files.keys().next().value?.split("/")[0];
+    if (
+      folder &&
+      files.has(`${folder}/index.html`) &&
+      [...files.keys()].every((path) => path.startsWith(`${folder}/`))
+    ) {
+      const flattened = [...files].map(
+        ([path, bytes]) => [path.slice(folder.length + 1), bytes] as const,
+      );
+      files.clear();
+      for (const [path, bytes] of flattened) files.set(path, bytes);
+    }
+  }
   if (!files.has("index.html"))
-    throw new SiteError("Place index.html at the root of the ZIP.");
+    throw new SiteError(
+      "Place index.html at the ZIP root or inside a single website folder.",
+    );
   return { files, total };
 }
 

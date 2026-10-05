@@ -1106,7 +1106,7 @@ function App() {
           )
         }
       >
-        Upload a ZIP with index.html at its root. Choose whether visitors need a
+        Upload a ZIP with index.html at its root or in one website folder. Choose whether visitors need a
         platform account to view it.
       </Empty>
     );
@@ -2222,7 +2222,7 @@ function App() {
                     : modal === "user"
                       ? "Better Auth creates the account. Give the initial password to the user privately."
                       : modal === "site"
-                        ? "Upload a ZIP containing index.html at its root. Site files share your account's storage allowance."
+                        ? "Upload a ZIP containing index.html at its root or in one website folder. Site files share your account's storage allowance."
                         : `Files are kept for ${workspace.config.retention_hours} hours, with a maximum size of ${bytes(workspace.config.max_file_bytes)}.`}
             </DialogDescription>
           </DialogHeader>

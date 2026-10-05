@@ -260,3 +260,5 @@ Configure DNS for `*.ugsites.2oo.dev` and `ugfiles.2oo.dev` to reach Nginx Proxy
 Sites are published as `s-ID.ugsites.2oo.dev`; file links use `https://ugfiles.2oo.dev/f/ID`. The file hostname serves downloads only, without the platform panel or APIs. Existing panel-domain file links remain valid until expiry. Changing the website domain moves site URLs; visitors must log in on the new hostname. The login approval still happens on the panel domain through Better Auth's site-bound handoff.
 
 The installer creates `~/.local/bin/relayoo` and adds the install directory to bash/zsh startup files. In the current shell, run `export PATH="$HOME/.local/bin:$PATH"`, then use `relayoo login` and `relayoo connect`. A piped installer cannot change the parent shell PATH.
+
+Site uploads accept a ZIP root containing index.html or one enclosing website folder. Finder metadata (__MACOSX, .DS_Store and AppleDouble files) is ignored, and leading ./ paths are normalized. Hidden configuration files and traversal paths remain rejected.
