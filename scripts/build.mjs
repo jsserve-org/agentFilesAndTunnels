@@ -1,4 +1,18 @@
 import { build } from "esbuild";
+import { execFileSync } from "node:child_process";
+execFileSync(
+  "pnpm",
+  [
+    "exec",
+    "tailwindcss",
+    "-i",
+    "src/panel.css",
+    "-o",
+    "dist/panel.css",
+    "--minify",
+  ],
+  { stdio: "inherit" },
+);
 await Promise.all([
   build({
     entryPoints: ["src/server.ts"],
@@ -29,11 +43,12 @@ await Promise.all([
     external: ["bufferutil", "utf-8-validate"],
   }),
   build({
-    entryPoints: ["src/panel.ts"],
+    entryPoints: ["src/panel.tsx"],
     outfile: "dist/panel.js",
     bundle: true,
     platform: "browser",
     target: "es2022",
     minify: true,
+    define: { "process.env.NODE_ENV": '"production"' },
   }),
 ]);

@@ -1,6 +1,12 @@
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { apiKey } from "@better-auth/api-key";
 import { APIError } from "better-auth/api";
+import {
+  admin,
+  bearer,
+  deviceAuthorization,
+  oneTimeToken,
+} from "better-auth/plugins";
 import { getMigrations } from "better-auth/db/migration";
 import { db, now } from "./db.ts";
 
@@ -17,7 +23,23 @@ const options = {
   secret,
   database: db,
   trustedOrigins: [origin],
-  advanced: { ipAddress: { ipAddressHeaders: ["x-relay-client-ip"] } },
+  advanced: {
+    ipAddress: { ipAddressHeaders: ["x-relay-client-ip"] },
+    cookies: {
+      session_token: {
+        name:
+          new URL(origin).protocol === "https:"
+            ? "__Host-relay.session_token"
+            : "relay.session_token",
+        attributes: {
+          path: "/",
+          httpOnly: true,
+          secure: new URL(origin).protocol === "https:",
+          sameSite: "lax",
+        },
+      },
+    },
+  },
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 12,
@@ -39,6 +61,18 @@ const options = {
     },
   },
   plugins: [
+    admin(),
+    bearer(),
+    oneTimeToken({
+      storeToken: "hashed",
+      disableClientRequest: true,
+      disableSetSessionCookie: true,
+      expiresIn: 1,
+    }),
+    deviceAuthorization({
+      validateClient: (clientId) => clientId === "relay-cli",
+      verificationUri: `${origin}/dashboard/agents`,
+    }),
     apiKey({
       enableMetadata: false,
       maximumNameLength: 100,
@@ -48,7 +82,7 @@ const options = {
   databaseHooks: {
     user: {
       create: {
-        before: async () => {
+        before: async (_user, context) => {
           const setting = db
             .prepare(
               "SELECT value FROM settings WHERE key='registration_enabled'",
@@ -60,7 +94,10 @@ const options = {
             !db
               .prepare("SELECT value FROM settings WHERE key='admin_user_id'")
               .get();
-          if (setting.value !== "true" && !localBootstrap)
+          // The admin plugin handles account creation and password hashing.
+          // Its HTTP endpoints are blocked; only our authenticated admin API calls it.
+          const adminCreation = context?.path === "/admin/create-user";
+          if (setting.value !== "true" && !localBootstrap && !adminCreation)
             throw new APIError("FORBIDDEN", {
               message: "Registration is closed.",
             });

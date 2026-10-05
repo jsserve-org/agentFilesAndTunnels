@@ -1,5 +1,13 @@
 import WebSocket from "ws";
-import { openAsBlob } from "node:fs";
+import {
+  openAsBlob,
+  readFileSync,
+  mkdirSync,
+  writeFileSync,
+  chmodSync,
+} from "node:fs";
+import { homedir, hostname } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { connect as tcpConnect, type Socket } from "node:net";
 import {
@@ -24,12 +32,36 @@ function opt(name: string, fallback?: string) {
   const index = args.indexOf(`--${name}`);
   return index >= 0 ? args[index + 1] : fallback;
 }
-const server = (opt("server", process.env.RELAY_SERVER) || "").replace(
-  /\/$/,
-  "",
-);
-const agent = opt("agent", process.env.RELAY_AGENT) || "";
-const token = opt("token", process.env.RELAY_TOKEN) || "";
+const credentialPath =
+  opt("config", process.env.RELAY_CONFIG) ||
+  join(homedir(), ".config", "relay", "credentials.json");
+let saved: { server?: string; agent?: string; token?: string } = {};
+try {
+  saved = JSON.parse(readFileSync(credentialPath, "utf8")) as typeof saved;
+} catch (error) {
+  if (!(
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "ENOENT"
+  ))
+    throw new Error(
+      "Could not read Relay credentials. Check your --config file.",
+    );
+}
+const selectedServer =
+  opt("server", process.env.RELAY_SERVER) || saved.server || "";
+const sameServer =
+  !saved.server || selectedServer.replace(/\/$/, "") === saved.server;
+const server = selectedServer.replace(/\/$/, "");
+const agent =
+  opt("agent", process.env.RELAY_AGENT) ||
+  (sameServer ? saved.agent : "") ||
+  "";
+const token =
+  opt("token", process.env.RELAY_TOKEN) ||
+  (sameServer ? saved.token : "") ||
+  "";
 class ApiError extends Error {
   constructor(
     message: string,
@@ -65,11 +97,15 @@ async function main() {
     console.log(`Relay desk CLI
 
 Commands:
+  login --server URL               Authorize this agent in your browser (OAuth device flow)
   connect                          Keep this laptop connected; reconnect automatically
   create http|tcp --local-port PORT Create a tunnel for the selected agent
   list                             List active tunnel reservations
   stop TUNNEL_ID                   Close a tunnel and all its connections
   upload FILE_PATH                 Upload a file and print its download link
+  deploy ZIP --name NAME            Host a static site (login required by default)
+  sites                            List hosted sites
+  delete-site SITE_ID               Delete a hosted site and its files
 
 Credentials: --server URL --agent ID --token TOKEN
 Environment: RELAY_SERVER, RELAY_AGENT, RELAY_TOKEN
@@ -77,7 +113,7 @@ The agent ID is needed for connect and create. An account API key can list,
 stop and upload; an agent token can manage only its own tunnels.`);
     return;
   }
-  if (!server || !token)
+  if (!server || (!token && command !== "login"))
     throw new Error(
       "Set RELAY_SERVER and RELAY_TOKEN, or pass --server and --token.",
     );
@@ -91,10 +127,130 @@ stop and upload; an agent token can manage only its own tunnels.`);
     throw new Error(
       "Server must be an HTTP(S) origin, such as https://relay.example.com.",
     );
+  if (command === "login") {
+    if (
+      origin.protocol !== "https:" &&
+      !["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)
+    )
+      throw new Error(
+        "Device authorization requires HTTPS (except localhost).",
+      );
+    const response = await fetch(`${server}/api/auth/device/code`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_id: "relay-cli",
+        scope: "agent:tunnels files:upload",
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok)
+      throw new Error("Could not request device authorization.");
+    const device = (await response.json()) as {
+      device_code: string;
+      user_code: string;
+      verification_uri_complete: string;
+      expires_in: number;
+      interval: number;
+    };
+    console.log(
+      `Open ${device.verification_uri_complete}\nCheck this code in your browser: ${device.user_code}\nWaiting for approval…`,
+    );
+    const deadline = Date.now() + device.expires_in * 1000;
+    let interval = device.interval;
+    while (Date.now() < deadline) {
+      await sleep(interval * 1000);
+      const response = await fetch(`${server}/api/auth/device/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_id: "relay-cli",
+          device_code: device.device_code,
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const grant = (await response.json()) as {
+        access_token?: string;
+        expires_in?: number;
+        error?: string;
+      };
+      if (grant.error === "authorization_pending") continue;
+      if (grant.error === "slow_down") {
+        interval += 5;
+        continue;
+      }
+      if (!response.ok || !grant.access_token)
+        throw new Error(grant.error || "Device authorization failed.");
+      const linked = await fetch(`${server}/api/agents/oauth`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${grant.access_token}`,
+        },
+        body: JSON.stringify({ label: opt("name", hostname()) }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const result = (await linked.json()) as { id?: string; error?: string };
+      if (!linked.ok || !result.id)
+        throw new Error(
+          result.error || "Could not register the approved agent.",
+        );
+      mkdirSync(join(credentialPath, ".."), { recursive: true, mode: 0o700 });
+      writeFileSync(
+        credentialPath,
+        JSON.stringify(
+          { server, agent: result.id, token: grant.access_token },
+          null,
+          2,
+        ) + "\n",
+        { mode: 0o600 },
+      );
+      chmodSync(credentialPath, 0o600);
+      console.log(
+        `Agent approved: ${result.id}\nCredentials saved to ${credentialPath}.\nRun relay connect to keep this agent online. Device sessions expire; run login again when required.`,
+      );
+      return;
+    }
+    throw new Error("Device approval expired. Run login again.");
+  }
   if (["connect", "create"].includes(command) && !agent)
     throw new Error("Set RELAY_AGENT or pass --agent ID.");
   if (command === "list") {
     console.log(JSON.stringify(await tunnels(), null, 2));
+    return;
+  }
+  if (command === "sites") {
+    console.log(JSON.stringify(await api("/sites"), null, 2));
+    return;
+  }
+  if (command === "delete-site") {
+    const siteId = args[1];
+    if (!siteId || !/^[a-f0-9]{32}$/.test(siteId))
+      throw new Error("Usage: delete-site SITE_ID");
+    await api(`/sites/${siteId}`, { method: "DELETE" });
+    console.log("Site deleted.");
+    return;
+  }
+  if (command === "deploy") {
+    const path = args[1],
+      name = opt("name"),
+      visibility = opt("visibility", "login");
+    if (!path || !name || !["login", "public"].includes(visibility || ""))
+      throw new Error(
+        "Usage: deploy ZIP --name NAME [--visibility login|public]",
+      );
+    const form = new FormData();
+    form.set("name", name);
+    form.set("visibility", visibility!);
+    form.set("file", await openAsBlob(path), "site.zip");
+    console.log(
+      JSON.stringify(
+        await api("/sites", { method: "POST", body: form }),
+        null,
+        2,
+      ),
+    );
     return;
   }
   if (command === "create") {

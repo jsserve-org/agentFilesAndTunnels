@@ -11,11 +11,14 @@ A Node.js 22 + TypeScript service with a browser panel, laptop CLI, public REST 
 - Forward raw TCP ports, including HTTPS bytes, through the same outbound connection.
 - Stop a tunnel from the laptop CLI or panel, including existing TCP connections.
 - Store files for at least 72 hours; return an unguessable public download link. Anyone holding that link can download until expiry. Cleanup runs hourly.
-- Expose tunnel creation/list/stop and file upload/list as MCP tools at `/mcp`.
+- Manage tunnels, files, static sites, agents, API keys and accounts on dedicated pages in a shadcn/ui sidebar panel. Avatars use Gravatar.
+- Administrators create users through Better Auth, set storage/tunnel allowances, and delete abusive tunnels, files, sites and credentials. Agents and API keys have no count caps.
+- Host persistent static ZIP sites with optional platform login, using the existing wildcard proxy.
+- Expose tunnels, files and static sites as MCP tools at `/mcp`.
 
 ## Authentication
 
-Authentication is provided by [Better Auth](https://www.better-auth.com/) and its official `@better-auth/api-key` plugin. Better Auth owns password hashing, credential validation, signed session cookies, session expiry/revocation, origin checks on auth endpoints, and database-backed auth rate limits. Both account API keys and agent tokens are generated, hashed, verified and revoked by the plugin. The application only maps verified identities to owned tunnels/files and administrator permissions.
+Authentication is provided by [Better Auth](https://www.better-auth.com/) and its official `@better-auth/api-key` plugin. Better Auth owns password hashing, credential validation, signed session cookies, session expiry/revocation, origin checks on auth endpoints, and database-backed auth rate limits. Account API keys and manually issued agent tokens are generated, hashed, verified and revoked by the API key plugin. Browser-approved agents use Better Auth device authorization sessions. The application only maps verified identities to owned tunnels/files and administrator permissions.
 
 The panel includes password changes and signing out other browsers. API keys and agent tokens must be revoked separately. Email verification and forgotten-password email delivery are not configured; no email sender has been supplied.
 
@@ -219,3 +222,31 @@ pnpm start
 ```
 
 Integration tests start isolated production server processes on temporary ports, exercise the real bundled CLI, and clean up their own processes and data.
+
+## Panel upgrade and agent authorization
+
+Update an existing LXC from inside the container as root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/lxc-update.sh -o /tmp/relay-update.sh && bash /tmp/relay-update.sh
+```
+
+The update preserves /etc/relay.env and /var/lib/relay and builds before stopping the service. Existing users must log in again because panel cookies now use a host-only cookie name. HTTPS sessions use __Host-relay.session_token, preventing hosted wildcard sites from setting the panel cookie.
+
+Agents install with `curl -fsSL https://relay.example.com/install.sh | bash`, then run `~/.local/bin/relay login --server https://relay.example.com`. Better Auth device authorization prints a URL/code for browser approval. The installer can download a verified Node22.23.3 runtime, including for older x64 CPUs. Credentials are saved privately (0600) and scoped to the approved agent. Login again when the Better Auth session expires. Agent deletion/revocation invalidates the OAuth session and active connection. Download /AGENTS.md from the Agents page for the full workflow. Manual agent credentials and account API keys remain supported.
+
+## Direct TCP hostname with multiple WANs
+
+Use one selected WAN for direct-tunnel.2oo.dev. Create a DNS A record pointing to that WAN's public IPv4 address (keep it updated when the address changes). Forward the configured TCP range, normally 20000–20099, on that WAN directly to the LXC's stable LAN address on the same ports. This hostname bypasses Nginx Proxy Manager; use DNS-only mode with providers that offer an HTTP proxy. Do not publish an AAAA record unless IPv6 routing is configured too.
+
+In the panel, open **Admin → Settings → Direct TCP forwarding**, enter direct-tunnel.2oo.dev, and save. Administrators can change it later; it is persisted in the database and overrides TCP_PUBLIC_HOST. GET/PATCH /api/admin/settings expose this setting as tcp_public_host. Existing reservations keep their ports and immediately advertise the new hostname. DNS and OpenWrt rules are managed separately. Changing the listening port range requires matching server environment, Docker port mappings (when using Docker), and router rules, then a restart.
+
+## Static hosting
+
+Upload a ZIP through Sites or `relay deploy ./site.zip --name demo --visibility login`. Put index.html at the ZIP root. Sites persist until deleted and use storage quota alongside files. Extraction rejects unsafe paths and enforces 100MB/2000-entry limits. The URL is s-ID.BASE_DOMAIN, served by the existing wildcard Nginx Proxy Manager host.
+
+Public sites need no login. Protected sites accept any registered Relay account, including users other than the owner. Users approve a short-lived, site-bound Better Auth login handoff; the platform session stays in a host-only cookie. GET /__relay/me exposes only the authenticated user's id, name and email; POST /__relay/logout signs out of that site. Platform sessions expiring or being revoked also revoke site access. No executable apps are run.
+
+REST: GET/POST /api/sites, GET/PATCH/DELETE /api/sites/:id, POST /api/sites/:id/login (browser session). Upload multipart file (ZIP), name and visibility (login/public). Administrators use GET /api/admin/resources and DELETE /api/admin/sites/:id to moderate. Other moderation collections are tunnels, files, agents and keys. Create users with POST /api/admin/users; PATCH /api/admin/users/:id/limits accepts storage_bytes and tunnels.
+
+MCP tools: list_tunnels, create_tunnel, stop_tunnel, list_files, upload_file, list_sites, deploy_site, delete_site. Discover schemas with tools/list. Deploy accepts a ZIP as base64. CLI commands: deploy, sites, delete-site.
