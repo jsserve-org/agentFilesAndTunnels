@@ -649,7 +649,7 @@ function App() {
   }
   const agentPrompt =
     credential?.kind === "agent"
-      ? `Connect this laptop to Relay desk at ${location.origin}. Read ${location.origin}/AGENTS.md first. Install the CLI with: curl -fsSL ${location.origin}/install.sh | bash\nFor browser-approved authorization run: ~/.local/bin/relay login --server ${location.origin}\nIf using the manually issued credential instead, set RELAY_SERVER=${location.origin}, RELAY_AGENT=${credential.id}, and RELAY_TOKEN=${credential.token}. Keep relay connect running, publish only the loopback port I request, and return the assigned tunnel address. Use relay list before creating duplicates and relay stop TUNNEL_ID to close a tunnel. Never commit or expose credentials. MCP: ${location.origin}/mcp.`
+      ? `Connect this laptop to Relay desk at ${location.origin}. Read ${location.origin}/AGENTS.md first. Install the CLI with: curl -fsSL ${location.origin}/install.sh | bash\nAdd the CLI to this shell with: export PATH="$HOME/.local/bin:$PATH"\nFor browser-approved authorization run: relayoo login --server ${location.origin}\nIf using the manually issued credential instead, set RELAY_SERVER=${location.origin}, RELAY_AGENT=${credential.id}, and RELAY_TOKEN=${credential.token}. Keep relayoo connect running, publish only the loopback port I request, and return the assigned tunnel address. Use relayoo list before creating duplicates and relayoo stop TUNNEL_ID to close a tunnel. Never commit or expose credentials. MCP: ${location.origin}/mcp.`
       : "";
   if (loading)
     return (
@@ -701,11 +701,11 @@ function App() {
               <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <SquareTerminal className="size-4" />A connection you approve
               </div>
-              <div>relay login</div>
+              <div>relayoo login</div>
               <div className="mt-2 text-primary">
                 ✓ Approved in your browser
               </div>
-              <div className="mt-2">relay connect</div>
+              <div className="mt-2">relayoo connect</div>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -1529,15 +1529,16 @@ function App() {
                   <div className="flex flex-col gap-3 sm:flex-row">
                     <pre className="min-w-0 flex-1 overflow-x-auto rounded-lg border bg-muted/50 p-4 font-mono text-xs leading-7">
                       curl -fsSL {location.origin}/install.sh | bash{"\n"}
-                      ~/.local/bin/relay login --server {location.origin}
-                      {"\n"}~/.local/bin/relay connect
+                      export PATH=&#34;$HOME/.local/bin:$PATH&#34;
+                      {"\n"}relayoo login --server {location.origin}
+                      {"\n"}relayoo connect
                     </pre>
                     <Button
                       variant="outline"
                       onClick={() =>
                         void run(() =>
                           copy(
-                            `curl -fsSL ${location.origin}/install.sh | bash\n~/.local/bin/relay login --server ${location.origin}\n~/.local/bin/relay connect`,
+                            `curl -fsSL ${location.origin}/install.sh | bash\nexport PATH="$HOME/.local/bin:$PATH"\nrelayoo login --server ${location.origin}\nrelayoo connect`,
                           ),
                         )
                       }

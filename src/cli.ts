@@ -94,7 +94,7 @@ async function tunnels() {
 
 async function main() {
   if (!command || command === "help" || command === "--help") {
-    console.log(`Relay desk CLI
+    console.log(`Relayoo CLI
 
 Commands:
   login --server URL               Authorize this agent in your browser (OAuth device flow)
@@ -208,7 +208,7 @@ stop and upload; an agent token can manage only its own tunnels.`);
       );
       chmodSync(credentialPath, 0o600);
       console.log(
-        `Agent approved: ${result.id}\nCredentials saved to ${credentialPath}.\nRun relay connect to keep this agent online. Device sessions expire; run login again when required.`,
+        `Agent approved: ${result.id}\nCredentials saved to ${credentialPath}.\nRun relayoo connect to keep this agent online. Device sessions expire; run login again when required.`,
       );
       return;
     }

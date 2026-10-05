@@ -46,6 +46,20 @@ chmod 600 "$relay_destination/relay.cjs"
 {
   # shellcheck disable=SC2016
   printf '#!/usr/bin/env bash\nset -euo pipefail\nexec %q "$(dirname -- "${BASH_SOURCE[0]}")/relay.cjs" "$@"\n' "$relay_node"
-} > "$relay_destination/relay"
-chmod 755 "$relay_destination/relay"
-printf '\nInstalled %s/relay\nAuthorize this agent:\n  %s/relay login --server %s\nThen connect:\n  %s/relay connect\n' "$relay_destination" "$relay_destination" "$relay_origin" "$relay_destination"
+} > "$relay_destination/relayoo"
+chmod 755 "$relay_destination/relayoo"
+# A piped installer cannot change its parent shell's environment. Configure future
+# bash/zsh shells and print the command to activate the path in the current one.
+# Keep $PATH literal so the startup file expands it when the shell starts.
+# shellcheck disable=SC2016
+relay_path_line=$(printf 'export PATH=%q:"$PATH"' "$relay_destination")
+for relay_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zprofile"; do
+  touch "$relay_profile"
+  if ! grep -Fqx -- "$relay_path_line" "$relay_profile"; then
+    printf '\n# Relay CLI\n%s\n' "$relay_path_line" >> "$relay_profile"
+  fi
+done
+if [[ -f $HOME/.bash_profile ]] && ! grep -Fqx -- "$relay_path_line" "$HOME/.bash_profile"; then
+  printf '\n# Relay CLI\n%s\n' "$relay_path_line" >> "$HOME/.bash_profile"
+fi
+printf '\nInstalled %s/relayoo\nAdded the install directory to your bash/zsh PATH.\nFor this shell, run:\n  %s\nAuthorize this agent:\n  relayoo login --server %s\nThen connect:\n  relayoo connect\n' "$relay_destination" "$relay_path_line" "$relay_origin"

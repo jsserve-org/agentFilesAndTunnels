@@ -233,7 +233,7 @@ curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/ma
 
 The update preserves /etc/relay.env and /var/lib/relay and builds before stopping the service. Existing users must log in again because panel cookies now use a host-only cookie name. HTTPS sessions use __Host-relay.session_token, preventing hosted wildcard sites from setting the panel cookie.
 
-Agents install with `curl -fsSL https://relay.example.com/install.sh | bash`, then run `~/.local/bin/relay login --server https://relay.example.com`. Better Auth device authorization prints a URL/code for browser approval. The installer can download a verified Node22.23.3 runtime, including for older x64 CPUs. Credentials are saved privately (0600) and scoped to the approved agent. Login again when the Better Auth session expires. Agent deletion/revocation invalidates the OAuth session and active connection. Download /AGENTS.md from the Agents page for the full workflow. Manual agent credentials and account API keys remain supported.
+Agents install with `curl -fsSL https://relay.example.com/install.sh | bash`, then run `relayoo login --server https://relay.example.com`. Better Auth device authorization prints a URL/code for browser approval. The installer can download a verified Node22.23.3 runtime, including for older x64 CPUs. Credentials are saved privately (0600) and scoped to the approved agent. Login again when the Better Auth session expires. Agent deletion/revocation invalidates the OAuth session and active connection. Download /AGENTS.md from the Agents page for the full workflow. Manual agent credentials and account API keys remain supported.
 
 ## Direct TCP hostname with multiple WANs
 
@@ -258,3 +258,5 @@ In **Admin → Settings → Content domains**, set the website base domain to `u
 Configure DNS for `*.ugsites.2oo.dev` and `ugfiles.2oo.dev` to reach Nginx Proxy Manager. Add an HTTPS proxy host for each, forwarding to the Relay LXC on port 3000. The wildcard website proxy needs a matching wildcard certificate (typically using a DNS challenge). Preserve the original Host header. Your panel and HTTP tunnel domains keep their existing proxy hosts.
 
 Sites are published as `s-ID.ugsites.2oo.dev`; file links use `https://ugfiles.2oo.dev/f/ID`. The file hostname serves downloads only, without the platform panel or APIs. Existing panel-domain file links remain valid until expiry. Changing the website domain moves site URLs; visitors must log in on the new hostname. The login approval still happens on the panel domain through Better Auth's site-bound handoff.
+
+The installer creates `~/.local/bin/relayoo` and adds the install directory to bash/zsh startup files. In the current shell, run `export PATH="$HOME/.local/bin:$PATH"`, then use `relayoo login` and `relayoo connect`. A piped installer cannot change the parent shell PATH.
