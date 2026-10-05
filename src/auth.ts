@@ -53,7 +53,13 @@ const options = {
               "SELECT value FROM settings WHERE key='registration_enabled'",
             )
             .get() as { value: string };
-          if (setting.value !== "true")
+          const localBootstrap =
+            process.env.RELAY_BOOTSTRAP_ADMIN === "1" &&
+            process.getuid?.() === 0 &&
+            !db
+              .query("SELECT value FROM settings WHERE key='admin_user_id'")
+              .get();
+          if (setting.value !== "true" && !localBootstrap)
             throw new APIError("FORBIDDEN", {
               message: "Registration is closed.",
             });

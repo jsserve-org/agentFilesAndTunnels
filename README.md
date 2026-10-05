@@ -38,6 +38,30 @@ Create your administrator account before opening registration to other people. T
 
 ## Proxmox LXC (native Bun, no Docker required)
 
+### One-command Proxmox host installer
+
+Run this as **root in your Proxmox host shell**, after these installer files have been pushed to the repository's `master` branch:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/proxmox-install.sh -o /tmp/relay-install.sh && bash /tmp/relay-install.sh
+```
+
+The installer asks for your panel domain and wildcard base, selects compatible storage (or asks when there are multiple choices), and creates a new **unprivileged Debian 12 LXC**. Defaults: next available container ID, `vmbr0`, DHCP, 2 CPU cores, 2 GiB RAM, and 16 GiB disk. It installs pinned Bun 1.3.6, builds the app from the repository, generates the auth secret, and starts the systemd service. Then it asks for an administrator email and a hidden password. Better Auth creates that account; public registration stays closed until you enable it in the panel. Credentials travel over stdin and are not written into command arguments.
+
+For a static address and specific storage, override settings in the same line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/proxmox-install.sh -o /tmp/relay-install.sh && PUBLIC_ORIGIN=https://relay.example.com BASE_DOMAIN=tunnel.example.com TCP_PUBLIC_HOST=ports.example.com STORAGE=local-lvm TEMPLATE_STORAGE=local CTID=120 IP_ADDRESS=192.168.1.90/24 GATEWAY=192.168.1.1 bash /tmp/relay-install.sh
+```
+
+Run `bash /tmp/relay-install.sh --help` for all options, including bridge, VLAN, CPU/RAM/disk, existing template, TCP range, and source revision. `SOURCE_REF` defaults to `master`; set a commit SHA for a fixed app revision. The download URL for the installer itself can also use that SHA. Existing containers are never overwritten. Failed installations preserve the new LXC for diagnosis rather than deleting its disk.
+
+For an installation without a controlling terminal, supply all required settings. The service starts with registration closed; finish account setup using `pct enter CTID`, then `/opt/relay/deploy/bootstrap-admin.sh`. That command also lets you retry if the initial password was invalid. The utility refuses to create a second administrator.
+
+The Proxmox host needs Internet access and a storage pool supporting container disks; template storage must support `vztmpl`. Keep a stable LXC address (static configuration or a DHCP reservation). DNS, Nginx Proxy Manager, OpenWrt forwarding and any existing Proxmox firewall rules still need the configuration below. The installer does not change those systems.
+
+### Manual installation inside an existing LXC
+
 Use a Debian/Ubuntu unprivileged LXC with a static LAN address, outbound Internet access, and a persistent disk sized for uploads. Install Bun 1.3.6 or newer and place its executable at `/usr/local/bin/bun`. Copy this project into `/opt/relay`, then inside the LXC as root:
 
 ```sh
