@@ -1,11 +1,11 @@
-import { Database } from "bun:sqlite";
+import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 
 const dataDir = process.env.DATA_DIR || "./data";
 mkdirSync(dataDir, { recursive: true });
-export const db = new Database(`${dataDir}/app.sqlite`, { create: true });
+export const db = new Database(`${dataDir}/app.sqlite`);
 db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-const legacyColumns = db.query("PRAGMA table_info(users)").all() as {
+const legacyColumns = db.prepare("PRAGMA table_info(users)").all() as {
   name: string;
 }[];
 if (legacyColumns.some((column) => column.name === "password")) {

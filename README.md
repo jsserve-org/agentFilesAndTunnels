@@ -1,6 +1,6 @@
 # Relay desk
 
-A Bun + TypeScript service with a browser panel, laptop CLI, public REST API and HTTP MCP endpoint. SQLite stores accounts and permanent tunnel reservations; uploaded files live on the same persistent volume. This is a single-server deployment.
+A Node.js 22 + TypeScript service with a browser panel, laptop CLI, public REST API and HTTP MCP endpoint. SQLite stores accounts and permanent tunnel reservations; uploaded files live on the same persistent volume. This is a single-server deployment.
 
 ## What it does
 
@@ -36,7 +36,7 @@ docker compose logs -f relay
 
 Create your administrator account before opening registration to other people. The first account becomes administrator. Data lives in the `relay-data` volume; preserve it across upgrades and back up both the SQLite database and `files/` directory. Do not use `docker compose down -v` unless deleting all data is intended.
 
-## Proxmox LXC (native Bun, no Docker required)
+## Proxmox LXC (native Node.js, no Docker required)
 
 ### One-command Proxmox host installer
 
@@ -46,7 +46,7 @@ Run this as **root in your Proxmox host shell**, after these installer files hav
 curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/proxmox-install.sh -o /tmp/relay-install.sh && bash /tmp/relay-install.sh
 ```
 
-The installer asks for your panel domain and wildcard base, selects compatible storage (or asks when there are multiple choices), and creates a new **unprivileged Debian 12 LXC**. Defaults: next available container ID, `vmbr0`, DHCP, 2 CPU cores, 2 GiB RAM, and 16 GiB disk. It installs pinned Bun 1.3.6, builds the app from the repository, generates the auth secret, and starts the systemd service. Then it asks for an administrator email and a hidden password. Better Auth creates that account; public registration stays closed until you enable it in the panel. Credentials travel over stdin and are not written into command arguments.
+The installer asks for your panel domain and wildcard base, selects compatible storage (or asks when there are multiple choices), and creates a new **unprivileged Debian 12 LXC**. Defaults: next available container ID, `vmbr0`, DHCP, 2 CPU cores, 2 GiB RAM, and 16 GiB disk. It installs pinned Node.js 22.23.3 and pnpm 10.28.2, builds the app from the repository, generates the auth secret, and starts the systemd service. Then it asks for an administrator email and a hidden password. Better Auth creates that account; public registration stays closed until you enable it in the panel. Credentials travel over stdin and are not written into command arguments.
 
 For a static address and specific storage, override settings in the same line:
 
@@ -54,13 +54,13 @@ For a static address and specific storage, override settings in the same line:
 curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/proxmox-install.sh -o /tmp/relay-install.sh && PUBLIC_ORIGIN=https://relay.example.com BASE_DOMAIN=tunnel.example.com TCP_PUBLIC_HOST=ports.example.com STORAGE=local-lvm TEMPLATE_STORAGE=local CTID=120 IP_ADDRESS=192.168.1.90/24 GATEWAY=192.168.1.1 bash /tmp/relay-install.sh
 ```
 
-For your two-storage setup, put the OS, Bun and application on `local-lvm`, and user data on `fourtb`:
+For your two-storage setup, put the OS, Node.js and application on `local-lvm`, and user data on `fourtb`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/proxmox-install.sh -o /tmp/relay-install.sh && STORAGE=local-lvm DATA_STORAGE=fourtb DATA_DISK_GB=100 bash /tmp/relay-install.sh
 ```
 
-This creates a 16 GiB root disk on `local-lvm` and a separate 100 GiB data volume on `fourtb`. Change `DATA_DISK_GB` to the capacity you want to allocate; it does not consume the entire four-terabyte pool. The data volume is mounted at `/var/lib/relay` and holds uploaded files, accounts, API key records, and tunnel reservations. The system disk holds `/opt/relay`, Bun, and `/etc/relay.env`. Include both volumes when backing up so the auth secret and database are preserved together. The data mount has `backup=1` enabled. Both selected storage pools must support Proxmox **Container** (`rootdir`) content; the installer checks this before creating a guest. Template storage is selected separately.
+This creates a 16 GiB root disk on `local-lvm` and a separate 100 GiB data volume on `fourtb`. Change `DATA_DISK_GB` to the capacity you want to allocate; it does not consume the entire four-terabyte pool. The data volume is mounted at `/var/lib/relay` and holds uploaded files, accounts, API key records, and tunnel reservations. The system disk holds `/opt/relay`, Node.js, and `/etc/relay.env`. Include both volumes when backing up so the auth secret and database are preserved together. The data mount has `backup=1` enabled. Both selected storage pools must support Proxmox **Container** (`rootdir`) content; the installer checks this before creating a guest. Template storage is selected separately.
 
 `DATA_STORAGE` defaults to the system storage if omitted; the installer still creates a separate data volume (100 GiB by default). These settings apply to new containers only. They do not move data from an existing installation. You can expand the data volume later from Proxmox or with `pct resize CTID mp0 +100G`.
 
@@ -72,21 +72,25 @@ The Proxmox host needs Internet access and a storage pool supporting container d
 
 ### Manual installation inside an existing LXC
 
-If an installation stopped at `bun: command not found`, retain the container and its volumes. From the Proxmox host run `pct enter CTID`, then inside the container:
+If the earlier Bun installation stopped at `Illegal instruction` or `bun: command not found`, keep the existing LXC and both disks. Intel Core 2 CPUs such as the Q8400 lack the SSE4.2 required by Bun's baseline build. This version runs on Node.js instead; Better Auth and the SQLite database format are unchanged.
+
+From the Proxmox host run `pct enter 111` (replace the ID if needed), then inside the LXC:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/lxc-finish.sh -o /tmp/relay-finish.sh && bash /tmp/relay-finish.sh
+curl -fsSL https://raw.githubusercontent.com/jsserve-org/agentFilesAndTunnels/master/deploy/lxc-upgrade-node.sh -o /tmp/relay-upgrade-node.sh && bash /tmp/relay-upgrade-node.sh
 ```
 
-This recovery command uses `/usr/local/bin/bun`, sets a complete PATH and a valid locale, rebuilds the existing `/opt/relay` checkout, and starts the service. If `/etc/relay.env` does not exist yet, it asks for your domains and generates the secret. Existing configuration and data are preserved. After it succeeds, run `/opt/relay/deploy/bootstrap-admin.sh` to create the first administrator if needed. Recovery requires the data volume at `/var/lib/relay` and an already extracted checkout and Bun binary, as present at that failure point.
+This installs the pinned Node runtime with a SHA-256 archive check, downloads the updated app, and builds it before stopping the existing service. The previous application directory is retained as `/opt/relay-before-node-TIMESTAMP-PID`. It preserves `/var/lib/relay` and `/etc/relay.env`, including the auth secret. If no configuration exists, it prompts for the domains. After it succeeds, run `/opt/relay/deploy/bootstrap-admin.sh` to create the first administrator if needed. The script requires the existing data mount and `/opt/relay` directory.
 
-Use a Debian/Ubuntu unprivileged LXC with a static LAN address, outbound Internet access, and a persistent disk sized for uploads. Install Bun 1.3.6 or newer and place its executable at `/usr/local/bin/bun`. Copy this project into `/opt/relay`, then inside the LXC as root:
+If this Node installation is interrupted later, resume inside the LXC with `bash /opt/relay/deploy/lxc-finish.sh` after correcting the reported failure. If Relay fails with `226/NAMESPACE` inside LXC, the finish script retries with a service-only override disabling `PrivateTmp`, `ProtectSystem`, `ProtectHome`, and `ReadWritePaths`. The service still runs as `relay` with `NoNewPrivileges` and container isolation. This reduces systemd filesystem isolation to accommodate hosts that deny additional mount namespaces. Other failures are reported in the service journal; inspect `journalctl -u relay -b --no-pager -l` for the complete error.
+
+Use a Debian/Ubuntu unprivileged LXC with a static LAN address, outbound Internet access, and a persistent disk sized for uploads. Install Node.js 22 and pnpm, or use `bash deploy/install-node.sh` after copying the project. Copy this project into `/opt/relay`, then inside the LXC as root:
 
 ```sh
 useradd --system --home /var/lib/relay --shell /usr/sbin/nologin relay
 cd /opt/relay
-bun install --frozen-lockfile
-bun run build
+pnpm install --frozen-lockfile
+pnpm run build
 cp .env.example /etc/relay.env
 # Edit /etc/relay.env with your real domains and a generated BETTER_AUTH_SECRET.
 chmod 600 /etc/relay.env
@@ -123,24 +127,24 @@ Only TCP is implemented. HTTP tunnels terminate public TLS at Nginx Proxy Manage
 
 ## Laptop / agent
 
-Create an agent in the panel and use **Copy agent prompt**. The served CLI is a single bundled file:
+Create an agent in the panel and use **Copy agent prompt**. The served CLI is a single bundled file requiring Node.js 22 or later:
 
 ```sh
-curl --fail --output relay.js https://relay.example.com/cli.js
+curl --fail --output relay.cjs https://relay.example.com/cli.cjs
 export RELAY_SERVER=https://relay.example.com
 export RELAY_AGENT=AGENT_ID
 export RELAY_TOKEN=AGENT_TOKEN
-bun relay.js connect
+node relay.cjs connect
 ```
 
 Leave `connect` running. In another shell with the same environment:
 
 ```sh
-bun relay.js create http --local-port 3000
-bun relay.js create tcp --local-port 8443
-bun relay.js list
-bun relay.js upload ./demo.zip
-bun relay.js stop TUNNEL_ID
+node relay.cjs create http --local-port 3000
+node relay.cjs create tcp --local-port 8443
+node relay.cjs list
+node relay.cjs upload ./demo.zip
+node relay.cjs stop TUNNEL_ID
 ```
 
 The CLI also accepts `--server`, `--agent`, `--token`, and `--local-host`. Targets are limited to laptop loopback (`127.0.0.1`, `localhost`, `::1`). A connection lost through sleep or an IP change reconnects automatically with backoff. A second connection for the same agent replaces the first. Use distinct agent IDs for separate laptops. Replacing a token disconnects the old connection but preserves all tunnel IDs.
@@ -200,18 +204,18 @@ Client configuration syntax varies. Tokens are hashed in the database and must n
 | `MAX_FILE_BYTES`                  | 100 MiB                                           |
 | `MAX_USER_STORAGE_BYTES`          | 1 GiB                                             |
 
-Better Auth limits email sign-in to 10 attempts per minute and signup to 5; key verification is limited to 600 requests per minute per key. Behind Nginx Proxy Manager, restrict direct access to port 3000 and ensure the proxy overwrites client IP forwarding headers.
+Better Auth limits email sign-in to 10 attempts per minute and signup to 5; key verification is limited to 600 requests per minute per key. The Node adapter sets the client IP header from the connection peer, so callers cannot spoof it. Behind Nginx Proxy Manager, authentication attempts share the proxy address rate-limit bucket.
 
 HTTP tunnels buffer requests and responses, limited to 16 MiB and a 30-second response deadline. For WebSockets, streaming/SSE, larger payloads or opaque TLS, use a raw TCP tunnel. TCP streams use acknowledgements for backpressure and close after five idle minutes. Each account has up to 100 active reservations; each agent has up to 128 TCP connections and 64 simultaneous HTTP requests. This deployment uses one server process and one shared persistent volume; it does not provide replication or automatic backups. Account recovery/email verification are not implemented.
 
 ## Development and validation
 
 ```sh
-bun install --frozen-lockfile
-bun run check
-bun run build
-bun test
-bun start
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm run build
+pnpm test
+pnpm start
 ```
 
 Integration tests start isolated production server processes on temporary ports, exercise the real bundled CLI, and clean up their own processes and data.

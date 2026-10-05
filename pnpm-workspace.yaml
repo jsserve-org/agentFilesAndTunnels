@@ -1,0 +1,6 @@
+onlyBuiltDependencies:
+  - esbuild
+# better-sqlite3 13 ships the native bindings in its package (tested on Core 2).
+# Skip pnpm's implicit node-gyp rebuild for packages containing binding.gyp.
+ignoredBuiltDependencies:
+  - better-sqlite3

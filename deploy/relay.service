@@ -10,7 +10,7 @@ Group=relay
 WorkingDirectory=/opt/relay
 EnvironmentFile=/etc/relay.env
 Environment=DATA_DIR=/var/lib/relay
-ExecStart=/usr/local/bin/bun /opt/relay/src/server.ts
+ExecStart=/usr/local/bin/node /opt/relay/dist/server.mjs
 Restart=on-failure
 RestartSec=3
 StateDirectory=relay

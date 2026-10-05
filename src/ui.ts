@@ -1,6 +1,8 @@
-const html = await Bun.file(
+import { readFile } from "node:fs/promises";
+const html = await readFile(
   new URL("../public/index.html", import.meta.url),
-).text();
+  "utf8",
+);
 
 export function page(origin: string) {
   const escaped = origin.replace(

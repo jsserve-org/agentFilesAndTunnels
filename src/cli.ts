@@ -1,3 +1,6 @@
+import WebSocket from "ws";
+import { openAsBlob } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { connect as tcpConnect, type Socket } from "node:net";
 import {
   MAX_HTTP_BODY,
@@ -129,8 +132,7 @@ stop and upload; an agent token can manage only its own tunnels.`);
   if (command === "upload") {
     const path = args[1];
     if (!path) throw new Error("Usage: upload FILE_PATH");
-    const file = Bun.file(path);
-    if (!(await file.exists())) throw new Error("File does not exist.");
+    const file = await openAsBlob(path);
     const form = new FormData();
     form.set("file", file, path.split(/[\\/]/).pop() || "file");
     console.log(
@@ -335,7 +337,7 @@ async function connectLoop() {
     }
     if (!replaced) {
       console.log(`Connection lost. Reconnecting in ${delay / 1000}s…`);
-      await Bun.sleep(delay);
+      await sleep(delay);
       delay = Math.min(delay * 2, 30_000);
     }
   }

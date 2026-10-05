@@ -1,12 +1,15 @@
-FROM oven/bun:1.3.6
+FROM node:22.23.3-bookworm-slim
 WORKDIR /app
-COPY package.json bun.lock* ./
-RUN bun install --frozen-lockfile
+RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY src ./src
 COPY public ./public
-RUN bun run build
+COPY scripts ./scripts
+COPY deploy ./deploy
 COPY tsconfig*.json ./
+RUN pnpm run build
 ENV PORT=3000 DATA_DIR=/data
 VOLUME /data
 EXPOSE 3000
-CMD ["bun", "src/server.ts"]
+CMD ["node", "dist/server.mjs"]

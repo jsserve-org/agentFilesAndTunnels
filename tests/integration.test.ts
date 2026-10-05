@@ -1,15 +1,32 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { request as httpRequest } from "node:http";
+import { after as afterAll, before as beforeAll, test } from "node:test";
+import { expect } from "expect";
+import { spawn, type ChildProcess } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
+import { serve } from "@hono/node-server";
+function launch(args: string[], options: { env: NodeJS.ProcessEnv }) {
+  const child = spawn(args[0], args.slice(1), {
+    env: options.env,
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  const exited = new Promise<number | null>((resolve, reject) => {
+    child.once("exit", resolve);
+    child.once("error", reject);
+  });
+  return Object.assign(child, { exited });
+}
+
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, connect, type Socket } from "node:net";
-import { Database } from "bun:sqlite";
+import Database from "better-sqlite3";
 
 type Credential = { id: string; token: string };
 type Tunnel = { id: string; public_port: number; url: string };
 let dataDir: string;
-let serverProcess: Bun.Subprocess;
-let cliProcess: Bun.Subprocess;
+let serverProcess: ReturnType<typeof launch>;
+let cliProcess: ReturnType<typeof launch>;
 let origin: string;
 let serverPort: number;
 let tcpPort: number;
@@ -18,7 +35,7 @@ let agent: Credential;
 let httpTunnel: Tunnel;
 let tcpTunnel: Tunnel;
 let uploadedId: string;
-let local: ReturnType<typeof Bun.serve>;
+let local: ReturnType<typeof serve>;
 const echo = createServer({ allowHalfOpen: true }, (socket) => {
   socket.on("data", (chunk) => socket.write(chunk));
   socket.on("end", () => socket.end());
@@ -39,12 +56,12 @@ async function eventually(check: () => Promise<boolean>, timeout = 10_000) {
     try {
       if (await check()) return;
     } catch {}
-    await Bun.sleep(50);
+    await sleep(50);
   }
   throw Error("Timed out waiting for condition");
 }
 async function startServer() {
-  serverProcess = Bun.spawn(["bun", "src/server.ts"], {
+  serverProcess = launch([process.execPath, "dist/server.mjs"], {
     env: {
       ...process.env,
       PORT: String(serverPort),
@@ -55,21 +72,17 @@ async function startServer() {
       TCP_PORT_END: String(tcpPort + 1),
       DATA_DIR: dataDir,
     },
-    stdout: "ignore",
-    stderr: "inherit",
   });
   await eventually(async () => (await fetch(origin + "/health")).ok);
 }
 async function startCli() {
-  cliProcess = Bun.spawn(["bun", "dist/relay.js", "connect"], {
+  cliProcess = launch([process.execPath, "dist/relay.cjs", "connect"], {
     env: {
       ...process.env,
       RELAY_SERVER: origin,
       RELAY_AGENT: agent.id,
       RELAY_TOKEN: agent.token,
     },
-    stdout: "ignore",
-    stderr: "inherit",
   });
   await eventually(async () => {
     const response = await fetch(origin + "/api/tunnels", {
@@ -87,13 +100,39 @@ async function request(
 ) {
   return fetch(origin + path, {
     method,
-    headers: { cookie: auth, "content-type": "application/json" },
+    headers: {
+      ...(auth ? { cookie: auth } : {}),
+      origin,
+      "content-type": "application/json",
+    },
     body: value ? JSON.stringify(value) : undefined,
   });
 }
-async function proxy(path: string) {
-  return fetch(origin + path, {
-    headers: { host: httpTunnel.id + ".tunnel.test" },
+async function proxy(path: string): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      origin + path,
+      { headers: { host: httpTunnel.id + ".tunnel.test" } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => {
+          const headers = new Headers();
+          for (let i = 0; i < res.rawHeaders.length; i += 2)
+            headers.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+          resolve(
+            new Response(
+              [204, 205, 304].includes(res.statusCode || 0)
+                ? null
+                : Buffer.concat(chunks),
+              { status: res.statusCode, headers },
+            ),
+          );
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
   });
 }
 beforeAll(async () => {
@@ -101,7 +140,7 @@ beforeAll(async () => {
   serverPort = await freePort();
   tcpPort = await freePort();
   origin = `http://127.0.0.1:${serverPort}`;
-  local = Bun.serve({
+  local = serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch(request) {
@@ -122,7 +161,8 @@ afterAll(async () => {
   cliProcess?.kill();
   serverProcess?.kill();
   await Promise.allSettled([cliProcess?.exited, serverProcess?.exited]);
-  local?.stop(true);
+  local?.close();
+  if (local && "closeAllConnections" in local) local.closeAllConnections();
   echo.close();
   if (dataDir) await rm(dataDir, { recursive: true, force: true });
 });
@@ -133,6 +173,7 @@ test("accounts, session, credentials and registration toggle", async () => {
     email: "admin@example.com",
     password: "a secure password 123",
   });
+  if (!registered.ok) console.error(await registered.clone().text());
   expect(registered.status).toBe(200);
   cookie = registered.headers.get("set-cookie")!.split(";")[0];
   const me = (await (await request("/api/me")).json()) as { admin: boolean };
@@ -184,7 +225,7 @@ test("HTTP root, reserved API paths, cookies, disconnect and reconnect", async (
     await request("/api/tunnels", "POST", {
       agent_id: agent.id,
       kind: "http",
-      local_port: local.port,
+      local_port: (local.address() as { port: number }).port,
     })
   ).json()) as Tunnel;
   const address = echo.address();
@@ -304,11 +345,11 @@ test("server restart preserves URLs and files; CLI reconnects automatically", as
   );
   const database = new Database(join(dataDir, "app.sqlite"));
   database
-    .query("UPDATE files SET expires_at=? WHERE id=?")
+    .prepare("UPDATE files SET expires_at=? WHERE id=?")
     .run(Date.now() - 1, uploadedId);
   database.close();
   expect((await fetch(origin + "/f/" + uploadedId)).status).toBe(404);
-}, 20_000);
+});
 
 test("different accounts cannot stop tunnels or change registration; origins are checked", async () => {
   const r = await request("/api/auth/sign-up/email", "POST", {
@@ -474,15 +515,17 @@ test("Better Auth rejects expired sessions and stores credentials in its own tab
     .join("; ");
   const database = new Database(join(dataDir, "app.sqlite"));
   database
-    .query("UPDATE session SET expiresAt=?")
+    .prepare("UPDATE session SET expiresAt=?")
     .run(new Date(Date.now() - 86400000).toISOString());
   const password = database
-    .query("SELECT password FROM account WHERE providerId='credential' LIMIT 1")
+    .prepare(
+      "SELECT password FROM account WHERE providerId='credential' LIMIT 1",
+    )
     .get() as { password: string };
   expect(password.password).not.toBe("replacement password 456");
   expect(
     (
-      database.query("PRAGMA table_info(users)").all() as { name: string }[]
+      database.prepare("PRAGMA table_info(users)").all() as { name: string }[]
     ).some((c) => c.name === "password"),
   ).toBe(false);
   database.close();

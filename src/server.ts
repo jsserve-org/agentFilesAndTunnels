@@ -1,3 +1,7 @@
+import { serve } from "@hono/node-server";
+import { WebSocket as AgentSocket, WebSocketServer } from "ws";
+import { openAsBlob } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { accountAuth, issueKey, revokeKey } from "./auth.ts";
 import {
   db,
@@ -55,7 +59,7 @@ if (
 mkdirSync(filesDir, { recursive: true });
 
 type Connection = { agentId: string; userId: string };
-type WebSocket = import("bun").ServerWebSocket<Connection>;
+type WebSocket = AgentSocket & { data: Connection };
 type Principal = User & { agentId?: string };
 const connections = new Map<string, WebSocket>();
 const pending = new Map<
@@ -77,7 +81,6 @@ const tcpSockets = new Map<
     acknowledgements: number;
   }
 >();
-const authAttempts = new Map<string, { count: number; expires: number }>();
 const json = (
   value: unknown,
   status = 200,
@@ -101,15 +104,15 @@ async function auth(request: Request): Promise<Principal | null> {
   const verified = await accountAuth.api.verifyApiKey({ body: { key: token } });
   if (!verified.valid || !verified.key) return null;
   const user = db
-    .query("SELECT id,email FROM users WHERE id=?")
+    .prepare("SELECT id,email FROM users WHERE id=?")
     .get(verified.key.referenceId) as User | null;
   if (!user) return null;
   const agent = db
-    .query("SELECT id FROM agents WHERE key_id=? AND user_id=?")
+    .prepare("SELECT id FROM agents WHERE key_id=? AND user_id=?")
     .get(verified.key.id, user.id) as { id: string } | null;
   if (agent) return { ...user, agentId: agent.id };
   return db
-    .query("SELECT id FROM account_keys WHERE id=? AND user_id=?")
+    .prepare("SELECT id FROM account_keys WHERE id=? AND user_id=?")
     .get(verified.key.id, user.id)
     ? user
     : null;
@@ -121,7 +124,7 @@ async function agentAuth(
   const principal = await auth(request);
   if (principal?.agentId !== agentId) return null;
   return db
-    .query("SELECT * FROM agents WHERE id=? AND user_id=?")
+    .prepare("SELECT * FROM agents WHERE id=? AND user_id=?")
     .get(agentId, principal.id) as Agent | null;
 }
 async function body(request: Request): Promise<Record<string, unknown>> {
@@ -160,6 +163,11 @@ function fileUrl(fileId: string) {
 }
 function send(ws: WebSocket, value: Wire) {
   try {
+    if (ws.readyState !== AgentSocket.OPEN) return;
+    if (ws.bufferedAmount > 32 * 1024 * 1024) {
+      ws.terminate();
+      return;
+    }
     ws.send(JSON.stringify(value));
   } catch {
     /* connection cleanup handles this */
@@ -242,11 +250,11 @@ async function listenTcp(t: Tunnel) {
   tcpListeners.set(t.id, listener);
 }
 for (const t of db
-  .query("SELECT * FROM tunnels WHERE kind='tcp' AND stopped_at IS NULL")
+  .prepare("SELECT * FROM tunnels WHERE kind='tcp' AND stopped_at IS NULL")
   .all() as Tunnel[])
   await listenTcp(t);
 function stopTunnel(t: Tunnel) {
-  db.query("UPDATE tunnels SET stopped_at=? WHERE id=?").run(now(), t.id);
+  db.prepare("UPDATE tunnels SET stopped_at=? WHERE id=?").run(now(), t.id);
   tcpListeners.get(t.id)?.close();
   tcpListeners.delete(t.id);
   for (const stream of tcpSockets.values())
@@ -282,11 +290,11 @@ async function createTunnel(user: Principal, payload: Record<string, unknown>) {
   if (user.agentId && user.agentId !== agentId)
     return fail("Agent token cannot manage another agent.", 403);
   const agent = db
-    .query("SELECT id FROM agents WHERE id=? AND user_id=?")
+    .prepare("SELECT id FROM agents WHERE id=? AND user_id=?")
     .get(agentId, user.id);
   if (!agent) return fail("Agent not found.", 404);
   const count = db
-    .query(
+    .prepare(
       "SELECT COUNT(*) AS count FROM tunnels WHERE user_id=? AND stopped_at IS NULL",
     )
     .get(user.id) as { count: number };
@@ -299,7 +307,7 @@ async function createTunnel(user: Principal, payload: Record<string, unknown>) {
     const used = new Set(
       (
         db
-          .query(
+          .prepare(
             "SELECT public_port FROM tunnels WHERE kind='tcp' AND stopped_at IS NULL",
           )
           .all() as { public_port: number }[]
@@ -323,7 +331,7 @@ async function createTunnel(user: Principal, payload: Record<string, unknown>) {
     created_at: now(),
     stopped_at: null,
   };
-  db.query("INSERT INTO tunnels VALUES (?,?,?,?,?,?,?,?,?)").run(
+  db.prepare("INSERT INTO tunnels VALUES (?,?,?,?,?,?,?,?,?)").run(
     t.id,
     t.user_id,
     t.agent_id,
@@ -337,7 +345,7 @@ async function createTunnel(user: Principal, payload: Record<string, unknown>) {
   try {
     await listenTcp(t);
   } catch {
-    db.query("DELETE FROM tunnels WHERE id=?").run(t.id);
+    db.prepare("DELETE FROM tunnels WHERE id=?").run(t.id);
     return fail(
       "Public TCP port could not be opened. Check for a conflicting listener.",
       503,
@@ -363,14 +371,14 @@ async function upload(request: Request, user: User) {
   if (!filename || filename.length > 255 || bytes.length > maxFile)
     return fail(`File name is invalid or exceeds ${maxFile} bytes.`, 413);
   const usage = db
-    .query("SELECT COALESCE(SUM(size),0) AS bytes FROM files WHERE user_id=?")
+    .prepare("SELECT COALESCE(SUM(size),0) AS bytes FROM files WHERE user_id=?")
     .get(user.id) as { bytes: number };
   if (usage.bytes + bytes.length > maxUserStorage)
     return fail("Account file storage limit reached.", 413);
   const fileId = id(),
     created = now(),
     expires = created + retention;
-  db.query("INSERT INTO files VALUES (?,?,?,?,?,?,?)").run(
+  db.prepare("INSERT INTO files VALUES (?,?,?,?,?,?,?)").run(
     fileId,
     user.id,
     filename,
@@ -380,9 +388,9 @@ async function upload(request: Request, user: User) {
     expires,
   );
   try {
-    await Bun.write(join(filesDir, fileId), bytes);
+    await writeFile(join(filesDir, fileId), bytes);
   } catch (error) {
-    db.query("DELETE FROM files WHERE id=?").run(fileId);
+    db.prepare("DELETE FROM files WHERE id=?").run(fileId);
     throw error;
   }
   return json(
@@ -565,7 +573,7 @@ async function mcp(request: Request, user: Principal) {
   if (name === "list_tunnels")
     output = (
       db
-        .query(
+        .prepare(
           "SELECT * FROM tunnels WHERE user_id=? AND stopped_at IS NULL ORDER BY created_at DESC",
         )
         .all(user.id) as Tunnel[]
@@ -576,7 +584,7 @@ async function mcp(request: Request, user: Principal) {
     output = await (await createTunnel(user, args)).json();
   else if (name === "stop_tunnel") {
     const t = db
-      .query(
+      .prepare(
         "SELECT * FROM tunnels WHERE id=? AND user_id=? AND stopped_at IS NULL",
       )
       .get(string(args.tunnel_id, 64), user.id) as Tunnel | null;
@@ -585,7 +593,7 @@ async function mcp(request: Request, user: Principal) {
   } else if (name === "list_files")
     output = (
       db
-        .query(
+        .prepare(
           "SELECT * FROM files WHERE user_id=? AND expires_at>? ORDER BY created_at DESC",
         )
         .all(user.id, now()) as StoredFile[]
@@ -629,346 +637,420 @@ async function mcp(request: Request, user: Principal) {
       ("error" in output || ("stopped" in output && output.stopped === false)),
   });
 }
-const server = Bun.serve<Connection>({
-  port,
-  hostname: "0.0.0.0",
-  maxRequestBodySize: maxFile + 1024 * 1024,
-  async fetch(request, server) {
-    try {
-      const url = new URL(request.url),
-        path = url.pathname;
-      const host = url.hostname.toLowerCase();
-      const controlHost = new URL(publicOrigin).hostname.toLowerCase();
-      const suffix = `.${baseDomain.toLowerCase()}`;
-      if (host !== controlHost && host.endsWith(suffix)) {
-        const tunnelId = host.slice(0, -suffix.length);
-        const t = db
-          .query(
-            "SELECT * FROM tunnels WHERE id=? AND kind='http' AND stopped_at IS NULL",
-          )
-          .get(tunnelId) as Tunnel | null;
-        return t ? await proxyHttp(request, t) : fail("Tunnel not found.", 404);
-      }
-      if (path === "/health") return json({ ok: true });
-      if (host !== controlHost) return fail("Unknown host.", 421);
-      const origin = request.headers.get("origin");
-      if (
-        origin &&
-        origin !== publicOrigin &&
-        !["GET", "HEAD"].includes(request.method)
-      )
-        return fail("Cross-origin request blocked.", 403);
-      if (path === "/")
-        return new Response(page(publicOrigin), {
-          headers: {
-            "content-type": "text/html; charset=utf-8",
-            "cache-control": "no-store",
-            "referrer-policy": "no-referrer",
-            "x-content-type-options": "nosniff",
-            "x-frame-options": "DENY",
-          },
-        });
-      const assets: Record<string, string> = {
-        "/cli.js": "../dist/relay.js",
-        "/panel.js": "../dist/panel.js",
-        "/style.css": "../public/style.css",
-      };
-      if (assets[path] && request.method === "GET")
-        return new Response(Bun.file(new URL(assets[path], import.meta.url)), {
+async function handleRequest(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url),
+      path = url.pathname;
+    const host = url.hostname.toLowerCase();
+    const controlHost = new URL(publicOrigin).hostname.toLowerCase();
+    const suffix = `.${baseDomain.toLowerCase()}`;
+    if (host !== controlHost && host.endsWith(suffix)) {
+      const tunnelId = host.slice(0, -suffix.length);
+      const t = db
+        .prepare(
+          "SELECT * FROM tunnels WHERE id=? AND kind='http' AND stopped_at IS NULL",
+        )
+        .get(tunnelId) as Tunnel | null;
+      return t ? await proxyHttp(request, t) : fail("Tunnel not found.", 404);
+    }
+    if (path === "/health") return json({ ok: true });
+    if (host !== controlHost) return fail("Unknown host.", 421);
+    const origin = request.headers.get("origin");
+    if (
+      origin &&
+      origin !== publicOrigin &&
+      !["GET", "HEAD"].includes(request.method)
+    )
+      return fail("Cross-origin request blocked.", 403);
+    if (path === "/")
+      return new Response(page(publicOrigin), {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+          "referrer-policy": "no-referrer",
+          "x-content-type-options": "nosniff",
+          "x-frame-options": "DENY",
+        },
+      });
+    const assets: Record<string, string> = {
+      "/cli.js": "../dist/relay.cjs",
+      "/cli.cjs": "../dist/relay.cjs",
+      "/panel.js": "../dist/panel.js",
+      "/style.css": "../public/style.css",
+    };
+    if (assets[path] && request.method === "GET")
+      return new Response(
+        await openAsBlob(new URL(assets[path], import.meta.url)),
+        {
           headers: {
             "content-type": path.endsWith(".css")
               ? "text/css; charset=utf-8"
               : "application/javascript; charset=utf-8",
           },
-        });
-      if (path.startsWith("/f/") && request.method === "GET") {
-        const f = db
-          .query("SELECT * FROM files WHERE id=? AND expires_at>?")
-          .get(path.slice(3), now()) as StoredFile | null;
-        if (!f) return fail("File not found or expired.", 404);
-        const file = Bun.file(join(filesDir, f.id));
-        if (!(await file.exists())) return fail("File unavailable.", 404);
-        return new Response(file, {
-          headers: {
-            "content-type": f.content_type,
-            "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(f.name)}`,
-            "cache-control": "private, no-store",
-            "x-content-type-options": "nosniff",
-            "referrer-policy": "no-referrer",
-          },
-        });
+        },
+      );
+    if (path.startsWith("/f/") && request.method === "GET") {
+      const f = db
+        .prepare("SELECT * FROM files WHERE id=? AND expires_at>?")
+        .get(path.slice(3), now()) as StoredFile | null;
+      if (!f) return fail("File not found or expired.", 404);
+      const file = await openAsBlob(join(filesDir, f.id)).catch(() => null);
+      if (!file) return fail("File unavailable.", 404);
+      return new Response(file, {
+        headers: {
+          "content-type": f.content_type,
+          "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+          "cache-control": "private, no-store",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+        },
+      });
+    }
+    if (path === "/api/config" && request.method === "GET")
+      return json({
+        registration_enabled:
+          (
+            db
+              .prepare(
+                "SELECT value FROM settings WHERE key='registration_enabled'",
+              )
+              .get() as { value: string }
+          ).value === "true",
+        max_file_bytes: maxFile,
+        retention_hours: retention / 3600_000,
+      });
+    if (path.startsWith("/api/auth/")) {
+      if (path.startsWith("/api/auth/api-key/"))
+        return fail("Use /api/keys or /api/agents to manage credentials.", 404);
+      return accountAuth.handler(request);
+    }
+    if (path.startsWith("/api/") || path === "/mcp") {
+      if (path === "/api/agent/connect") {
+        const agentId = url.searchParams.get("agent") || "";
+        const agent = await agentAuth(request, agentId);
+        if (!agent) return fail("Invalid agent credentials.", 401);
+        return fail("WebSocket upgrade required.", 426);
       }
-      if (path === "/api/config" && request.method === "GET")
+      const user = await auth(request);
+      if (!user) return fail("Authentication required.", 401);
+      if (path === "/mcp" && request.method === "POST")
+        return mcp(request, user);
+      if (path === "/mcp")
+        return new Response(null, {
+          status: 405,
+          headers: { allow: "POST" },
+        });
+      if (path === "/api/me" && request.method === "GET")
         return json({
-          registration_enabled:
+          user,
+          admin:
             (
               db
-                .query(
-                  "SELECT value FROM settings WHERE key='registration_enabled'",
-                )
-                .get() as { value: string }
-            ).value === "true",
-          max_file_bytes: maxFile,
-          retention_hours: retention / 3600_000,
+                .prepare("SELECT value FROM settings WHERE key='admin_user_id'")
+                .get() as { value: string } | null
+            )?.value === user.id,
         });
-      if (path.startsWith("/api/auth/")) {
-        if (path.startsWith("/api/auth/api-key/"))
-          return fail(
-            "Use /api/keys or /api/agents to manage credentials.",
-            404,
-          );
-        return accountAuth.handler(request);
+      if (path === "/api/admin/settings" && request.method === "PATCH") {
+        if (user.agentId)
+          return fail("Agent token cannot change settings.", 403);
+        const admin = db
+          .prepare("SELECT value FROM settings WHERE key='admin_user_id'")
+          .get() as { value: string } | null;
+        if (admin?.value !== user.id) return fail("Admin only.", 403);
+        const data = await body(request);
+        if (typeof data.registration_enabled !== "boolean")
+          return fail("registration_enabled must be boolean");
+        db.prepare(
+          "UPDATE settings SET value=? WHERE key='registration_enabled'",
+        ).run(String(data.registration_enabled));
+        return json({ registration_enabled: data.registration_enabled });
       }
-      if (path.startsWith("/api/") || path === "/mcp") {
-        if (path === "/api/agent/connect") {
-          const agentId = url.searchParams.get("agent") || "";
-          const agent = await agentAuth(request, agentId);
-          if (!agent) return fail("Invalid agent credentials.", 401);
-          if (
-            server.upgrade(request, {
-              data: { agentId: agent.id, userId: agent.user_id },
-            })
-          )
-            return;
-          return fail("WebSocket upgrade required.", 426);
-        }
-        const user = await auth(request);
-        if (!user) return fail("Authentication required.", 401);
-        if (path === "/mcp" && request.method === "POST")
-          return mcp(request, user);
-        if (path === "/mcp")
-          return new Response(null, {
-            status: 405,
-            headers: { allow: "POST" },
-          });
-        if (path === "/api/me" && request.method === "GET")
-          return json({
-            user,
-            admin:
-              (
-                db
-                  .query("SELECT value FROM settings WHERE key='admin_user_id'")
-                  .get() as { value: string } | null
-              )?.value === user.id,
-          });
-        if (path === "/api/admin/settings" && request.method === "PATCH") {
-          if (user.agentId)
-            return fail("Agent token cannot change settings.", 403);
-          const admin = db
-            .query("SELECT value FROM settings WHERE key='admin_user_id'")
-            .get() as { value: string } | null;
-          if (admin?.value !== user.id) return fail("Admin only.", 403);
-          const data = await body(request);
-          if (typeof data.registration_enabled !== "boolean")
-            return fail("registration_enabled must be boolean");
-          db.query(
-            "UPDATE settings SET value=? WHERE key='registration_enabled'",
-          ).run(String(data.registration_enabled));
-          return json({ registration_enabled: data.registration_enabled });
-        }
+      if (
+        (path === "/api/keys" ||
+          path.startsWith("/api/keys/") ||
+          path === "/api/agents" ||
+          path.startsWith("/api/agents/")) &&
+        user.agentId
+      )
+        return fail("Agent token cannot manage credentials.", 403);
+      if (path === "/api/keys" && request.method === "GET")
+        return json(
+          db
+            .prepare(
+              "SELECT id,label,created_at FROM account_keys WHERE user_id=? ORDER BY created_at DESC",
+            )
+            .all(user.id),
+        );
+      if (path === "/api/keys" && request.method === "POST") {
+        const label = string((await body(request)).label, 100);
+        if (!label) return fail("Key name required");
+        const key = await issueKey(user.id, label);
+        db.prepare("INSERT INTO account_keys VALUES (?,?,?,?)").run(
+          key.id,
+          user.id,
+          label,
+          now(),
+        );
+        return json({ id: key.id, token: key.key }, 201);
+      }
+      if (path.startsWith("/api/keys/") && request.method === "DELETE") {
+        const keyId = path.slice(10);
         if (
-          (path === "/api/keys" ||
-            path.startsWith("/api/keys/") ||
-            path === "/api/agents" ||
-            path.startsWith("/api/agents/")) &&
-          user.agentId
+          !db
+            .prepare("SELECT id FROM account_keys WHERE id=? AND user_id=?")
+            .get(keyId, user.id)
         )
-          return fail("Agent token cannot manage credentials.", 403);
-        if (path === "/api/keys" && request.method === "GET")
-          return json(
-            db
-              .query(
-                "SELECT id,label,created_at FROM account_keys WHERE user_id=? ORDER BY created_at DESC",
-              )
-              .all(user.id),
-          );
-        if (path === "/api/keys" && request.method === "POST") {
-          const label = string((await body(request)).label, 100);
-          if (!label) return fail("Key name required");
-          const key = await issueKey(user.id, label);
-          db.query("INSERT INTO account_keys VALUES (?,?,?,?)").run(
-            key.id,
-            user.id,
-            label,
-            now(),
-          );
-          return json({ id: key.id, token: key.key }, 201);
-        }
-        if (path.startsWith("/api/keys/") && request.method === "DELETE") {
-          const keyId = path.slice(10);
-          if (
-            !db
-              .query("SELECT id FROM account_keys WHERE id=? AND user_id=?")
-              .get(keyId, user.id)
-          )
-            return fail("Key not found.", 404);
-          await revokeKey(user.id, keyId);
-          db.query("DELETE FROM account_keys WHERE id=? AND user_id=?").run(
-            keyId,
-            user.id,
-          );
-          return json({ ok: true });
-        }
-        if (path === "/api/agents" && request.method === "GET")
-          return json(
-            db
-              .query(
-                "SELECT id,label,created_at FROM agents WHERE user_id=? ORDER BY created_at DESC",
-              )
-              .all(user.id),
-          );
-        if (path === "/api/agents" && request.method === "POST") {
-          const label = string((await body(request)).label, 100);
-          if (!label) return fail("Agent name required");
-          const key = await issueKey(user.id, label),
-            agentId = id();
-          db.query("INSERT INTO agents VALUES (?,?,?,?,?)").run(
-            agentId,
-            user.id,
-            key.id,
-            label,
-            now(),
-          );
-          return json({ id: agentId, token: key.key }, 201);
-        }
-        const rotate = path.match(/^\/api\/agents\/([a-f0-9]{32})\/rotate$/);
-        if (rotate && request.method === "POST") {
-          const agentId = rotate[1];
-          if (
-            !db
-              .query("SELECT id FROM agents WHERE id=? AND user_id=?")
-              .get(agentId, user.id)
-          )
-            return fail("Agent not found.", 404);
-          const previous = db
-            .query("SELECT * FROM agents WHERE id=? AND user_id=?")
-            .get(agentId, user.id) as Agent;
-          const key = await issueKey(user.id, previous.label);
-          await revokeKey(user.id, previous.key_id);
-          db.query("UPDATE agents SET key_id=? WHERE id=?").run(
-            key.id,
-            agentId,
-          );
-          const ws = connections.get(agentId);
-          closeAgent(agentId);
-          ws?.close(4001, "Credentials rotated");
-          return json({ id: agentId, token: key.key });
-        }
-        if (path === "/api/tunnels" && request.method === "GET")
-          return json(
-            (
-              db
-                .query(
-                  "SELECT * FROM tunnels WHERE user_id=? AND stopped_at IS NULL ORDER BY created_at DESC",
-                )
-                .all(user.id) as Tunnel[]
-            )
-              .filter((t) => !user.agentId || t.agent_id === user.agentId)
-              .map(showTunnel),
-          );
-        if (path === "/api/tunnels" && request.method === "POST")
-          return createTunnel(user, await body(request));
-        if (path.startsWith("/api/tunnels/") && request.method === "DELETE") {
-          const t = db
-            .query(
-              "SELECT * FROM tunnels WHERE id=? AND user_id=? AND stopped_at IS NULL",
-            )
-            .get(path.slice(13), user.id) as Tunnel | null;
-          if (!t || (user.agentId && t.agent_id !== user.agentId))
-            return fail("Tunnel not found.", 404);
-          stopTunnel(t);
-          return json({ ok: true });
-        }
-        if (path === "/api/files" && request.method === "GET")
-          return json(
-            (
-              db
-                .query(
-                  "SELECT * FROM files WHERE user_id=? AND expires_at>? ORDER BY created_at DESC",
-                )
-                .all(user.id, now()) as StoredFile[]
-            ).map((f) => ({ ...f, url: fileUrl(f.id) })),
-          );
-        if (path === "/api/files" && request.method === "POST")
-          return upload(request, user);
-        return fail("Endpoint not found.", 404);
+          return fail("Key not found.", 404);
+        await revokeKey(user.id, keyId);
+        db.prepare("DELETE FROM account_keys WHERE id=? AND user_id=?").run(
+          keyId,
+          user.id,
+        );
+        return json({ ok: true });
       }
-      return fail("Not found.", 404);
+      if (path === "/api/agents" && request.method === "GET")
+        return json(
+          db
+            .prepare(
+              "SELECT id,label,created_at FROM agents WHERE user_id=? ORDER BY created_at DESC",
+            )
+            .all(user.id),
+        );
+      if (path === "/api/agents" && request.method === "POST") {
+        const label = string((await body(request)).label, 100);
+        if (!label) return fail("Agent name required");
+        const key = await issueKey(user.id, label),
+          agentId = id();
+        db.prepare("INSERT INTO agents VALUES (?,?,?,?,?)").run(
+          agentId,
+          user.id,
+          key.id,
+          label,
+          now(),
+        );
+        return json({ id: agentId, token: key.key }, 201);
+      }
+      const rotate = path.match(/^\/api\/agents\/([a-f0-9]{32})\/rotate$/);
+      if (rotate && request.method === "POST") {
+        const agentId = rotate[1];
+        if (
+          !db
+            .prepare("SELECT id FROM agents WHERE id=? AND user_id=?")
+            .get(agentId, user.id)
+        )
+          return fail("Agent not found.", 404);
+        const previous = db
+          .prepare("SELECT * FROM agents WHERE id=? AND user_id=?")
+          .get(agentId, user.id) as Agent;
+        const key = await issueKey(user.id, previous.label);
+        await revokeKey(user.id, previous.key_id);
+        db.prepare("UPDATE agents SET key_id=? WHERE id=?").run(
+          key.id,
+          agentId,
+        );
+        const ws = connections.get(agentId);
+        closeAgent(agentId);
+        ws?.close(4001, "Credentials rotated");
+        return json({ id: agentId, token: key.key });
+      }
+      if (path === "/api/tunnels" && request.method === "GET")
+        return json(
+          (
+            db
+              .prepare(
+                "SELECT * FROM tunnels WHERE user_id=? AND stopped_at IS NULL ORDER BY created_at DESC",
+              )
+              .all(user.id) as Tunnel[]
+          )
+            .filter((t) => !user.agentId || t.agent_id === user.agentId)
+            .map(showTunnel),
+        );
+      if (path === "/api/tunnels" && request.method === "POST")
+        return createTunnel(user, await body(request));
+      if (path.startsWith("/api/tunnels/") && request.method === "DELETE") {
+        const t = db
+          .prepare(
+            "SELECT * FROM tunnels WHERE id=? AND user_id=? AND stopped_at IS NULL",
+          )
+          .get(path.slice(13), user.id) as Tunnel | null;
+        if (!t || (user.agentId && t.agent_id !== user.agentId))
+          return fail("Tunnel not found.", 404);
+        stopTunnel(t);
+        return json({ ok: true });
+      }
+      if (path === "/api/files" && request.method === "GET")
+        return json(
+          (
+            db
+              .prepare(
+                "SELECT * FROM files WHERE user_id=? AND expires_at>? ORDER BY created_at DESC",
+              )
+              .all(user.id, now()) as StoredFile[]
+          ).map((f) => ({ ...f, url: fileUrl(f.id) })),
+        );
+      if (path === "/api/files" && request.method === "POST")
+        return upload(request, user);
+      return fail("Endpoint not found.", 404);
+    }
+    return fail("Not found.", 404);
+  } catch (error) {
+    if (error instanceof BodyTooLarge) return fail(error.message, 413);
+    console.error(error);
+    return fail("Internal server error.", 500);
+  }
+}
+const socketHandlers = {
+  open(ws: WebSocket) {
+    const old = connections.get(ws.data.agentId);
+    if (old && old !== ws) {
+      closeAgent(ws.data.agentId);
+      old.close(4000, "Replaced by new connection");
+    }
+    connections.set(ws.data.agentId, ws);
+  },
+  message(ws: WebSocket, message: string) {
+    if (connections.get(ws.data.agentId) !== ws) return;
+    const data = parseFrame(String(message));
+    if (!data) {
+      ws.close(1008, "Invalid frame");
+      return;
+    }
+    if (data.type === "ping") {
+      send(ws, { type: "pong" });
+      return;
+    }
+    if (data.type === "http_response" && data.id) {
+      const item = pending.get(data.id);
+      if (item && item.agentId === ws.data.agentId) {
+        clearTimeout(item.timer);
+        pending.delete(data.id);
+        item.resolve(data);
+      }
+      return;
+    }
+    if (!data.id) return;
+    const stream = tcpSockets.get(data.id);
+    if (stream?.agentId !== ws.data.agentId) return;
+    if (data.type === "tcp_ready") stream.socket.resume();
+    if (
+      data.type === "tcp_ack" &&
+      stream.acknowledgements > 0 &&
+      --stream.acknowledgements === 0
+    )
+      stream.socket.resume();
+    if (data.type === "tcp_data" && data.body) {
+      if (data.body.length > 128 * 1024) {
+        stream.socket.destroy();
+        return;
+      }
+      stream.socket.write(Buffer.from(data.body, "base64"), () =>
+        send(ws, { type: "tcp_ack", id: data.id }),
+      );
+    }
+    if (data.type === "tcp_end") stream.socket.end();
+    if (data.type === "tcp_close") stream.socket.destroy();
+  },
+  close(ws: WebSocket) {
+    if (connections.get(ws.data.agentId) === ws) closeAgent(ws.data.agentId);
+  },
+};
+
+const server = serve({
+  port,
+  hostname: "0.0.0.0",
+  fetch: async (request, env) => {
+    try {
+      request.headers.set(
+        "x-relay-client-ip",
+        env.incoming.socket.remoteAddress || "127.0.0.1",
+      );
+      if (!["GET", "HEAD"].includes(request.method)) {
+        const bytes = await readBody(request.body, maxFile + 1024 * 1024);
+        request = new Request(request.url, {
+          method: request.method,
+          headers: request.headers,
+          body: new Uint8Array(bytes),
+        });
+      }
+      return await handleRequest(request);
     } catch (error) {
       if (error instanceof BodyTooLarge) return fail(error.message, 413);
       console.error(error);
       return fail("Internal server error.", 500);
     }
   },
-  websocket: {
-    maxPayloadLength: MAX_FRAME_BYTES,
-    backpressureLimit: 32 * 1024 * 1024,
-    closeOnBackpressureLimit: true,
-    idleTimeout: 90,
-    open(ws) {
-      const old = connections.get(ws.data.agentId);
-      if (old && old !== ws) {
-        closeAgent(ws.data.agentId);
-        old.close(4000, "Replaced by new connection");
-      }
-      connections.set(ws.data.agentId, ws);
-    },
-    message(ws, message) {
-      if (connections.get(ws.data.agentId) !== ws) return;
-      const data = parseFrame(String(message));
-      if (!data) {
-        ws.close(1008, "Invalid frame");
-        return;
-      }
-      if (data.type === "ping") {
-        send(ws, { type: "pong" });
-        return;
-      }
-      if (data.type === "http_response" && data.id) {
-        const item = pending.get(data.id);
-        if (item && item.agentId === ws.data.agentId) {
-          clearTimeout(item.timer);
-          pending.delete(data.id);
-          item.resolve(data);
-        }
-        return;
-      }
-      if (!data.id) return;
-      const stream = tcpSockets.get(data.id);
-      if (stream?.agentId !== ws.data.agentId) return;
-      if (data.type === "tcp_ready") stream.socket.resume();
-      if (
-        data.type === "tcp_ack" &&
-        stream.acknowledgements > 0 &&
-        --stream.acknowledgements === 0
-      )
-        stream.socket.resume();
-      if (data.type === "tcp_data" && data.body) {
-        if (data.body.length > 128 * 1024) {
-          stream.socket.destroy();
-          return;
-        }
-        stream.socket.write(Buffer.from(data.body, "base64"), () =>
-          send(ws, { type: "tcp_ack", id: data.id }),
-        );
-      }
-      if (data.type === "tcp_end") stream.socket.end();
-      if (data.type === "tcp_close") stream.socket.destroy();
-    },
-    close(ws) {
-      if (connections.get(ws.data.agentId) === ws) closeAgent(ws.data.agentId);
-    },
-  },
 });
+const sockets = new WebSocketServer({
+  noServer: true,
+  maxPayload: MAX_FRAME_BYTES,
+  perMessageDeflate: false,
+});
+server.on("upgrade", (incoming, socket, head) => {
+  const reject = (status: number) => {
+    socket.end("HTTP/1.1 " + status + " Rejected\r\nConnection: close\r\n\r\n");
+  };
+  (async () => {
+    const url = new URL(incoming.url || "/", "http://" + incoming.headers.host);
+    if (
+      url.hostname !== new URL(publicOrigin).hostname ||
+      url.pathname !== "/api/agent/connect"
+    ) {
+      reject(404);
+      return;
+    }
+    if (incoming.headers.origin && incoming.headers.origin !== publicOrigin) {
+      reject(403);
+      return;
+    }
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(incoming.headers))
+      if (typeof value === "string") headers.set(key, value);
+      else if (Array.isArray(value)) headers.set(key, value.join(", "));
+    const agent = await agentAuth(
+      new Request(url, { headers }),
+      url.searchParams.get("agent") || "",
+    );
+    if (!agent) {
+      reject(401);
+      return;
+    }
+    sockets.handleUpgrade(incoming, socket, head, (raw) => {
+      const ws = Object.assign(raw, {
+        data: { agentId: agent.id, userId: agent.user_id },
+      });
+      let lastSeen = Date.now();
+      const heartbeat = setInterval(() => {
+        if (Date.now() - lastSeen > 90_000) ws.terminate();
+      }, 30_000);
+      heartbeat.unref();
+      ws.on("error", () => ws.terminate());
+      ws.on("message", (message) => {
+        lastSeen = Date.now();
+        socketHandlers.message(ws, message.toString());
+      });
+      ws.on("close", () => {
+        clearInterval(heartbeat);
+        socketHandlers.close(ws);
+      });
+      socketHandlers.open(ws);
+    });
+  })().catch((error) => {
+    console.error(error);
+    reject(500);
+  });
+});
+
 setInterval(() => {
   const expired = db
-    .query("SELECT id FROM files WHERE expires_at<=?")
+    .prepare("SELECT id FROM files WHERE expires_at<=?")
     .all(now()) as { id: string }[];
   for (const file of expired) {
     try {
       unlinkSync(join(filesDir, file.id));
     } catch {}
-    db.query("DELETE FROM files WHERE id=?").run(file.id);
+    db.prepare("DELETE FROM files WHERE id=?").run(file.id);
   }
 }, 3600_000).unref();
-console.log(`Relay desk listening on ${server.url}`);
+server.on("listening", () =>
+  console.log(`Relay desk listening on port ${port}`),
+);

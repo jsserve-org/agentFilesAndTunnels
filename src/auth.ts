@@ -17,6 +17,7 @@ const options = {
   secret,
   database: db,
   trustedOrigins: [origin],
+  advanced: { ipAddress: { ipAddressHeaders: ["x-relay-client-ip"] } },
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 12,
@@ -49,7 +50,7 @@ const options = {
       create: {
         before: async () => {
           const setting = db
-            .query(
+            .prepare(
               "SELECT value FROM settings WHERE key='registration_enabled'",
             )
             .get() as { value: string };
@@ -57,7 +58,7 @@ const options = {
             process.env.RELAY_BOOTSTRAP_ADMIN === "1" &&
             process.getuid?.() === 0 &&
             !db
-              .query("SELECT value FROM settings WHERE key='admin_user_id'")
+              .prepare("SELECT value FROM settings WHERE key='admin_user_id'")
               .get();
           if (setting.value !== "true" && !localBootstrap)
             throw new APIError("FORBIDDEN", {
@@ -65,12 +66,10 @@ const options = {
             });
         },
         after: async (user) => {
-          db.query("INSERT INTO users(id,email,created_at) VALUES(?,?,?)").run(
-            user.id,
-            user.email,
-            now(),
-          );
-          db.query(
+          db.prepare(
+            "INSERT INTO users(id,email,created_at) VALUES(?,?,?)",
+          ).run(user.id, user.email, now());
+          db.prepare(
             "INSERT OR IGNORE INTO settings(key,value) VALUES('admin_user_id',?)",
           ).run(user.id);
         },

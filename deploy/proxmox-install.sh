@@ -27,7 +27,7 @@ Environment options:
   SOURCE_URL          Override source archive URL; default GitHub repository
   CT_HOSTNAME            relay-desk
 
-Creates a Debian 12 unprivileged container, installs Bun 1.3.6 and a systemd
+Creates a Debian 12 unprivileged container, installs Node.js 22 and a systemd
 service, generates its auth secret, and prompts for the initial administrator.
 It does not modify OpenWrt, DNS, Nginx Proxy Manager or Proxmox firewall rules.
 HELP
@@ -121,7 +121,7 @@ cleanup() {
 trap cleanup EXIT
 curl --fail --location --retry 3 --output "$workdir/source.tar.gz" "$SOURCE_URL"
 tar -tzf "$workdir/source.tar.gz" > "$workdir/entries"
-for file in package.json bun.lock src/server.ts deploy/relay.service deploy/lxc-finish.sh; do
+for file in package.json pnpm-lock.yaml src/server.ts deploy/relay.service deploy/lxc-finish.sh deploy/install-node.sh; do
   grep -Eq "^[^/]+/$file$" "$workdir/entries" || die "Source archive is missing $file."
 done
 printf 'Creating unprivileged LXC %s on %s: %s cores, %s MiB RAM, %s GiB disk, %s\n' "$CTID" "$STORAGE" "$CORES" "$MEMORY" "$DISK_GB" "$IP_ADDRESS"
@@ -144,12 +144,9 @@ apt-get -o Acquire::Retries=5 update
 apt-get -o Acquire::Retries=5 install -y ca-certificates curl unzip openssl
 useradd --system --home /var/lib/relay --shell /usr/sbin/nologin relay
 install -d /opt/relay /var/lib/relay
-curl --fail --location --retry 3 --output /tmp/bun.zip https://github.com/oven-sh/bun/releases/download/bun-v1.3.6/bun-linux-x64-baseline.zip
-unzip -q /tmp/bun.zip -d /tmp/relay-bun
-install -m 0755 /tmp/relay-bun/bun-linux-x64-baseline/bun /usr/local/bin/bun
-rm -rf /tmp/bun.zip /tmp/relay-bun
 tar -xzf /root/relay-source.tar.gz -C /opt/relay --strip-components=1 --no-same-owner
 rm /root/relay-source.tar.gz
+bash /opt/relay/deploy/install-node.sh
 bash /opt/relay/deploy/lxc-finish.sh
 GUEST
 printf '\nService installed. Registration is closed until you create the first account.\n'
@@ -164,6 +161,6 @@ if has_tty; then
   read -r -s -p 'Confirm password (hidden): ' admin_confirm </dev/tty
   printf '\n'
   [[ $admin_password == "$admin_confirm" ]] || die 'Passwords do not match. Use the bootstrap command above to retry.'
-  printf '%s\n%s\n' "$admin_email" "$admin_password" | pct exec "$CTID" -- /usr/local/bin/bun --env-file=/etc/relay.env /opt/relay/deploy/bootstrap-admin.ts
+  printf '%s\n%s\n' "$admin_email" "$admin_password" | pct exec "$CTID" -- /usr/local/bin/node --env-file=/etc/relay.env /opt/relay/dist/bootstrap-admin.mjs
   unset admin_password admin_confirm
 fi

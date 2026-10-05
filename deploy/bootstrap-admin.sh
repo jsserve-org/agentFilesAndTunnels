@@ -8,5 +8,5 @@ printf '\n'
 read -r -s -p 'Confirm password (hidden): ' admin_confirm </dev/tty
 printf '\n'
 [[ $admin_password == "$admin_confirm" ]] || { echo 'Passwords do not match.' >&2; exit 1; }
-printf '%s\n%s\n' "$admin_email" "$admin_password" | /usr/local/bin/bun --env-file=/etc/relay.env deploy/bootstrap-admin.ts
+printf '%s\n%s\n' "$admin_email" "$admin_password" | /usr/local/bin/node --env-file=/etc/relay.env dist/bootstrap-admin.mjs
 unset admin_password admin_confirm
