@@ -149,7 +149,7 @@ rm /root/relay-source.tar.gz
 bash /opt/relay/deploy/install-node.sh
 bash /opt/relay/deploy/lxc-finish.sh
 GUEST
-printf '\nService installed. Registration is closed until you create the first account.\n'
+printf '\nService installed. Registration is closed. Create an administrator with the local bootstrap utility.\n'
 pct exec "$CTID" -- hostname -I
 printf '\nTo bootstrap manually: pct enter %s, then run /opt/relay/deploy/bootstrap-admin.sh\n' "$CTID"
 printf 'Then configure Nginx Proxy Manager for %s and *.%s to this LXC on port 3000.\n' "$panel_host" "$BASE_DOMAIN"

@@ -1,3 +1,4 @@
+import { reserveBody, bufferRequest, BodyBusy } from "./request-body.ts";
 import {
   sitesDomain,
   tunnelsDomain,
@@ -47,6 +48,7 @@ import {
   parseFrame,
   readBody,
   BodyTooLarge,
+  BodyReadTimeout,
   proxyHeaders,
   type Frame as Wire,
 } from "./protocol.ts";
@@ -860,6 +862,12 @@ async function mcp(request: Request, user: Principal) {
   });
 }
 async function handleRequest(request: Request): Promise<Response> {
+  let releaseBody: (() => void) | undefined;
+  const buffer = async (limit: number) => {
+    if (["GET", "HEAD"].includes(request.method)) return;
+    releaseBody = reserveBody(limit);
+    request = await bufferRequest(request, limit);
+  };
   try {
     const url = new URL(request.url),
       path = url.pathname;
@@ -873,7 +881,11 @@ async function handleRequest(request: Request): Promise<Response> {
         ? (db.prepare("SELECT * FROM sites WHERE id=?").get(siteId.slice(2)) as
             Site | undefined)
         : undefined;
-      if (site || sitesDomain() !== tunnelsDomain() || /^s-[a-f0-9]{32}$/.test(siteId))
+      if (
+        site ||
+        sitesDomain() !== tunnelsDomain() ||
+        /^s-[a-f0-9]{32}$/.test(siteId)
+      )
         return site
           ? await serveSite(request, site)
           : fail("Site not found.", 404);
@@ -885,7 +897,10 @@ async function handleRequest(request: Request): Promise<Response> {
           "SELECT * FROM tunnels WHERE (public_slug=? OR id=?) AND kind='http' AND stopped_at IS NULL",
         )
         .get(tunnelId, tunnelId) as Tunnel | null;
-      return t ? await proxyHttp(request, t) : fail("Tunnel not found.", 404);
+      if (!t) return fail("Tunnel not found.", 404);
+      if (!connections.has(t.agent_id)) return offlinePage();
+      await buffer(MAX_HTTP_BODY);
+      return await proxyHttp(request, t);
     }
     if (path === "/health") return json({ ok: true });
     if (host !== controlHost && host !== filesHost())
@@ -996,6 +1011,7 @@ async function handleRequest(request: Request): Promise<Response> {
         return fail("Use the site's login link.", 404);
       if (path.startsWith("/api/auth/api-key/"))
         return fail("Use /api/keys or /api/agents to manage credentials.", 404);
+      await buffer(64 * 1024);
       const response = await accountAuth.handler(request);
       if (path === "/api/auth/device/token" && response.ok) {
         const granted = (await response.clone().json()) as {
@@ -1030,6 +1046,7 @@ async function handleRequest(request: Request): Promise<Response> {
           .get(`device_session:${session.session.id}`);
         if (!deviceSession)
           return fail("Complete device authorization first.", 403);
+        await buffer(64 * 1024);
         const label = string((await body(request)).label, 100);
         if (!label) return fail("Agent name required.");
         const existing = db
@@ -1055,8 +1072,15 @@ async function handleRequest(request: Request): Promise<Response> {
       }
       const user = await auth(request);
       if (!user) return fail("Authentication required.", 401);
+      await buffer(
+        path === "/api/files" || path === "/api/sites"
+          ? maxFile + 1024 * 1024
+          : path === "/mcp"
+            ? Math.ceil((maxFile * 4) / 3) + 64 * 1024
+            : 64 * 1024,
+      );
       if (path === "/mcp" && request.method === "POST")
-        return mcp(request, user);
+        return await mcp(request, user);
       if (path === "/mcp")
         return new Response(null, {
           status: 405,
@@ -1461,7 +1485,7 @@ async function handleRequest(request: Request): Promise<Response> {
             .map(showTunnel),
         );
       if (path === "/api/tunnels" && request.method === "POST")
-        return createTunnel(user, await body(request));
+        return await createTunnel(user, await body(request));
       if (path.startsWith("/api/tunnels/") && request.method === "DELETE") {
         const t = db
           .prepare(
@@ -1484,7 +1508,7 @@ async function handleRequest(request: Request): Promise<Response> {
           ).map(showFile),
         );
       if (path === "/api/files" && request.method === "POST")
-        return upload(request, user);
+        return await upload(request, user);
       const deleteFile = path.match(/^\/api\/files\/([a-f0-9]{32})$/);
       if (deleteFile && request.method === "DELETE") {
         if (user.agentId)
@@ -1502,10 +1526,16 @@ async function handleRequest(request: Request): Promise<Response> {
     }
     return fail("Not found.", 404);
   } catch (error) {
+    if (error instanceof BodyReadTimeout)
+      return fail("Request body timed out.", 408);
+    if (error instanceof BodyBusy)
+      return fail("Server request capacity reached. Retry shortly.", 429);
     if (error instanceof SiteError) return fail(error.message, error.status);
     if (error instanceof BodyTooLarge) return fail(error.message, 413);
     console.error(error);
     return fail("Internal server error.", 500);
+  } finally {
+    releaseBody?.();
   }
 }
 const socketHandlers = {
@@ -1573,14 +1603,6 @@ const server = serve({
         "x-relay-client-ip",
         env.incoming.socket.remoteAddress || "127.0.0.1",
       );
-      if (!["GET", "HEAD"].includes(request.method)) {
-        const bytes = await readBody(request.body, maxFile + 1024 * 1024);
-        request = new Request(request.url, {
-          method: request.method,
-          headers: request.headers,
-          body: new Uint8Array(bytes),
-        });
-      }
       return await handleRequest(request);
     } catch (error) {
       if (error instanceof BodyTooLarge) return fail(error.message, 413);

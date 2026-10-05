@@ -88,16 +88,10 @@ const options = {
               "SELECT value FROM settings WHERE key='registration_enabled'",
             )
             .get() as { value: string };
-          const localBootstrap =
-            process.env.RELAY_BOOTSTRAP_ADMIN === "1" &&
-            process.getuid?.() === 0 &&
-            !db
-              .prepare("SELECT value FROM settings WHERE key='admin_user_id'")
-              .get();
           // The admin plugin handles account creation and password hashing.
           // Its HTTP endpoints are blocked; only our authenticated admin API calls it.
           const adminCreation = context?.path === "/admin/create-user";
-          if (setting.value !== "true" && !localBootstrap && !adminCreation)
+          if (setting.value !== "true" && !adminCreation)
             throw new APIError("FORBIDDEN", {
               message: "Registration is closed.",
             });
@@ -106,9 +100,6 @@ const options = {
           db.prepare(
             "INSERT INTO users(id,email,created_at) VALUES(?,?,?)",
           ).run(user.id, user.email, now());
-          db.prepare(
-            "INSERT OR IGNORE INTO settings(key,value) VALUES('admin_user_id',?)",
-          ).run(user.id);
         },
       },
     },

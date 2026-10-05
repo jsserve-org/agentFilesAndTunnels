@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS user_limits (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, storage_bytes INTEGER NOT NULL, tunnels INTEGER NOT NULL, agents INTEGER NOT NULL, api_keys INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS sites (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, visibility TEXT NOT NULL, size INTEGER NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS site_grants (token_hash TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL);
-INSERT OR IGNORE INTO settings(key,value) VALUES('registration_enabled','true');
+INSERT OR IGNORE INTO settings(key,value) VALUES('registration_enabled','false');
 `);
 const tunnelColumns = db.prepare("PRAGMA table_info(tunnels)").all() as {
   name: string;

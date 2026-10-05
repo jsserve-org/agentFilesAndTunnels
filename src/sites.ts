@@ -198,6 +198,24 @@ export async function deleteSite(site: Site) {
   await rm(join(siteDirectory, site.id), { recursive: true, force: true });
   db.prepare("DELETE FROM sites WHERE id=?").run(site.id);
 }
+export function safeSiteReturnPath(value: unknown, site: Site): string {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    /[\x00-\x20\x7f\\]/.test(value) ||
+    value.includes("__relay")
+  )
+    return "/";
+  try {
+    const base = siteURL(site);
+    const resolved = new URL(value, base);
+    if (resolved.origin !== new URL(base).origin) return "/";
+    return resolved.pathname + resolved.search + resolved.hash;
+  } catch {
+    return "/";
+  }
+}
 export async function siteLogin(
   request: Request,
   site: Site,
@@ -213,14 +231,7 @@ export async function siteLogin(
     site.id,
     now() + 60_000,
   );
-  const path =
-    typeof returnPath === "string" &&
-    returnPath.startsWith("/") &&
-    !returnPath.startsWith("//") &&
-    !returnPath.includes("\\") &&
-    !returnPath.includes("__relay")
-      ? returnPath
-      : "/";
+  const path = safeSiteReturnPath(returnPath, site);
   const url = new URL("/__relay/callback", siteURL(site));
   url.searchParams.set("token", token.token);
   url.searchParams.set("return_path", path);
@@ -271,13 +282,7 @@ export async function serveSite(
       });
     }
     const returnPath = url.searchParams.get("return_path") || "/";
-    const safePath =
-      returnPath.startsWith("/") &&
-      !returnPath.startsWith("//") &&
-      !returnPath.includes("\\") &&
-      !returnPath.includes("__relay")
-        ? returnPath
-        : "/";
+    const safePath = safeSiteReturnPath(returnPath, site);
     return new Response(null, {
       status: 303,
       headers: {

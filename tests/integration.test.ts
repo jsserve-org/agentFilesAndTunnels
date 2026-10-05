@@ -2,7 +2,7 @@ import { request as httpRequest } from "node:http";
 import { after as afterAll, before as beforeAll, test } from "node:test";
 import { expect } from "expect";
 import { zipSync, strToU8 } from "fflate";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { serve } from "@hono/node-server";
 function launch(args: string[], options: { env: NodeJS.ProcessEnv }) {
@@ -156,6 +156,17 @@ beforeAll(async () => {
     },
   });
   await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+  const bootstrap = spawnSync(process.execPath, ["dist/bootstrap-admin.mjs"], {
+    env: {
+      ...process.env,
+      DATA_DIR: dataDir,
+      PUBLIC_ORIGIN: origin,
+      BETTER_AUTH_SECRET: "integration-test-only-secret-12345678901234567890",
+    },
+    input: "admin@example.com\na secure password 123\n",
+    encoding: "utf8",
+  });
+  if (bootstrap.status !== 0) throw Error(bootstrap.stderr);
   await startServer();
 });
 afterAll(async () => {
@@ -169,7 +180,7 @@ afterAll(async () => {
 });
 
 test("accounts, session, credentials and registration toggle", async () => {
-  const registered = await request("/api/auth/sign-up/email", "POST", {
+  const registered = await request("/api/auth/sign-in/email", "POST", {
     name: "Test user",
     email: "admin@example.com",
     password: "a secure password 123",
@@ -1567,4 +1578,183 @@ test("admin URL modes create unique stable names and preserve legacy URLs", asyn
   }
   await request("/api/agents/" + agent.id, "DELETE");
   await request("/api/admin/settings", "PATCH", { tunnel_url_mode: "named" });
+});
+
+test("fresh deployments require local admin bootstrap and never promote public signup", async () => {
+  const freshDir = await mkdtemp(join(tmpdir(), "relay-fresh-security-"));
+  const freshPort = await freePort();
+  const freshOrigin = `http://127.0.0.1:${freshPort}`;
+  const env = {
+    ...process.env,
+    DATA_DIR: freshDir,
+    PORT: String(freshPort),
+    PUBLIC_ORIGIN: freshOrigin,
+    BASE_DOMAIN: "fresh.test",
+    BETTER_AUTH_SECRET: "fresh-security-only-secret-12345678901234567890",
+  };
+  const child = launch([process.execPath, "dist/server.mjs"], { env });
+  try {
+    await eventually(async () => (await fetch(freshOrigin + "/health")).ok);
+    const signup = () =>
+      fetch(freshOrigin + "/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: freshOrigin },
+        body: JSON.stringify({
+          name: "Public user",
+          email: "public@example.com",
+          password: "public user password 123",
+        }),
+      });
+    expect((await signup()).status).toBe(403);
+    const db = new Database(join(freshDir, "app.sqlite"));
+    db.prepare(
+      "UPDATE settings SET value='true' WHERE key='registration_enabled'",
+    ).run();
+    const publicSignup = await signup();
+    if (!publicSignup.ok) console.error(await publicSignup.clone().text());
+    expect(publicSignup.status).toBe(200);
+    const publicCookie = publicSignup.headers.get("set-cookie")!.split(";")[0];
+    expect(
+      (
+        (await (
+          await fetch(freshOrigin + "/api/me", {
+            headers: { cookie: publicCookie },
+          })
+        ).json()) as { admin: boolean }
+      ).admin,
+    ).toBe(false);
+    expect(
+      db.prepare("SELECT value FROM settings WHERE key='admin_user_id'").get(),
+    ).toBeUndefined();
+    const bootstrap = spawnSync(
+      process.execPath,
+      ["dist/bootstrap-admin.mjs"],
+      {
+        env,
+        input: "localadmin@example.com\nlocal bootstrap password 123\n",
+        encoding: "utf8",
+      },
+    );
+    expect(bootstrap.status).toBe(0);
+    const adminId = (
+      db
+        .prepare("SELECT value FROM settings WHERE key='admin_user_id'")
+        .get() as { value: string }
+    ).value;
+    expect(
+      (
+        db.prepare("SELECT email FROM users WHERE id=?").get(adminId) as {
+          email: string;
+        }
+      ).email,
+    ).toBe("localadmin@example.com");
+    db.close();
+  } finally {
+    child.kill();
+    await child.exited;
+    await rm(freshDir, { recursive: true, force: true });
+  }
+});
+
+function partialPost(path: string, headers: Record<string, string> = {}) {
+  let resolveResult: (status: number) => void;
+  let rejectResult: (error: Error) => void;
+  const result = new Promise<number>((resolve, reject) => {
+    resolveResult = resolve;
+    rejectResult = reject;
+  });
+  const request = httpRequest(
+    origin + path,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "1048576",
+        ...headers,
+      },
+    },
+    (res) => {
+      res.resume();
+      resolveResult(res.statusCode || 0);
+    },
+  );
+  request.on("error", (error) => rejectResult(error));
+  request.write("x");
+  return { request, result };
+}
+
+test("partial unauthenticated and cross-origin uploads reject before buffering; large buffering is capped", async () => {
+  for (const [headers, status] of [
+    [{}, 401],
+    [{ cookie, origin: "https://attacker.example" }, 403],
+  ] as [Record<string, string>, number][]) {
+    const partial = partialPost("/api/files", headers);
+    try {
+      expect(
+        await Promise.race([partial.result, sleep(1500).then(() => 0)]),
+      ).toBe(status);
+    } finally {
+      partial.request.destroy();
+    }
+  }
+  const large = partialPost("/api/files", { cookie });
+  void large.result.catch(() => {});
+  try {
+    await sleep(100);
+    const second = partialPost("/api/files", { cookie });
+    try {
+      expect(
+        await Promise.race([second.result, sleep(1500).then(() => 0)]),
+      ).toBe(429);
+    } finally {
+      second.request.destroy();
+    }
+    expect((await request("/api/me")).status).toBe(200);
+  } finally {
+    large.request.destroy();
+  }
+  await sleep(100);
+  const oversized = partialPost("/api/auth/sign-in/email", {
+    "content-length": "65537",
+  });
+  try {
+    expect(
+      await Promise.race([oversized.result, sleep(1500).then(() => 0)]),
+    ).toBe(413);
+  } finally {
+    oversized.request.destroy();
+  }
+});
+
+test("site login callback rejects control-character and external return paths", async () => {
+  const response = await deploySite(
+    { "index.html": strToU8("Protected redirect regression") },
+    "login",
+  );
+  const site = (await response.json()) as { id: string };
+  try {
+    for (const unsafe of [
+      "/\t/attacker.example",
+      "//attacker.example",
+      "/\\attacker.example",
+      "/\n/attacker.example",
+    ]) {
+      const grant = (await (
+        await request(`/api/sites/${site.id}/login`, "POST", {
+          return_path: unsafe,
+        })
+      ).json()) as { url: string };
+      const callback = new URL(grant.url);
+      expect(callback.searchParams.get("return_path")).toBe("/");
+      callback.searchParams.set("return_path", unsafe);
+      const result = await siteRequest(
+        site.id,
+        callback.pathname + callback.search,
+      );
+      expect(result.status).toBe(303);
+      expect(result.headers.get("location")).toBe("/");
+    }
+  } finally {
+    await request(`/api/sites/${site.id}`, "DELETE");
+  }
 });

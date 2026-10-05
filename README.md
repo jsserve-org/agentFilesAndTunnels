@@ -5,7 +5,7 @@ A Node.js 22 + TypeScript service with a browser panel, laptop CLI, public REST 
 ## What it does
 
 - Register, log in, create/revoke account API keys and create/replace agent tokens.
-- Turn registration on or off immediately from the first user's administrator panel.
+- Turn registration on or off immediately from the locally bootstrapped administrator panel.
 - Assign random permanent HTTP subdomains. The laptop connects outbound, so a changed laptop IP does not change the public link. Reconnects work after 24 hours and beyond. Reservations persist until explicitly stopped.
 - Show an offline page while a laptop is disconnected. Requests are not queued or replayed.
 - Forward raw TCP ports, including HTTPS bytes, through the same outbound connection.
@@ -37,7 +37,7 @@ docker compose up -d --build
 docker compose logs -f relay
 ```
 
-Create your administrator account before opening registration to other people. The first account becomes administrator. Data lives in the `relay-data` volume; preserve it across upgrades and back up both the SQLite database and `files/` directory. Do not use `docker compose down -v` unless deleting all data is intended.
+Fresh installations start with registration closed. Create the administrator explicitly with `docker compose exec relay bash deploy/bootstrap-admin.sh`, which prompts for credentials privately. Public signup never promotes an administrator. For a manual deployment run `bash deploy/bootstrap-admin.sh` in the application directory using its `.env` file or exported configuration. Data lives in the `relay-data` volume; preserve it across upgrades and back up both the SQLite database and `files/` directory. Do not use `docker compose down -v` unless deleting all data is intended.
 
 ## Proxmox LXC (native Node.js, no Docker required)
 
@@ -272,3 +272,7 @@ CLI: `relayoo upload ./report.pdf --permanent`. REST multipart uploads accept `p
 Administrators can also change the HTTP tunnel base domain under **Settings → HTTP tunnel URLs** (`tunnels_base_domain` in GET/PATCH `/api/admin/settings`). Enter `tunnel.example.com`, without `*.` or a scheme. Set matching wildcard DNS and an HTTPS proxy. Changes persist, update all generated tunnel URLs, and preserve IDs, reservations and agent connections. `BASE_DOMAIN` is the default until overridden in the panel. Website and file domain settings remain separate.
 
 **Settings → HTTP tunnel URLs → New tunnel URL format** lets admins choose `named` (default: `my-demo-a7k2m9q4.tunnels.example.com`), `random` (8 lowercase letters/digits), or `uuid`. Set a prefix in the tunnel creation form, `relayoo create http --local-port 3000 --name my-demo`, or REST/MCP `name`. Names accept 1–40 lowercase letters, digits and hyphens; omitted names use `tunnel`. Random suffixes use cryptographic randomness and are checked for collisions. Format changes apply only to new tunnels. Existing URL names persist, including legacy UUID URLs. TCP tunnels continue to use their hostname and port. The mode is exposed as `tunnel_url_mode` in admin settings.
+
+### Request-body safeguards
+
+Authentication and origin checks happen before platform upload buffering. Authentication and ordinary API JSON bodies are limited to 64 KiB; file/site uploads allow the configured file limit plus 1 MiB multipart overhead; MCP allows base64 overhead. The server permits one large body at a time, up to 16 buffered requests total, with a 192 MiB aggregate input reservation cap and a 30-second body-read deadline. Busy requests return 429; oversized bodies return 413. These caps bound input buffering, while decoding and multipart parsing also require memory. HTTP tunnel bodies use their 16 MiB limit under the same capacity controls. Existing administrator assignments are preserved on upgrade.

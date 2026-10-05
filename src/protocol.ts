@@ -58,11 +58,18 @@ export async function readBody(
 ): Promise<Buffer> {
   if (!stream) return Buffer.alloc(0);
   const reader = stream.getReader();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void reader.cancel().catch(() => {});
+  }, 30_000);
+  timer.unref();
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
+      if (timedOut) throw new BodyReadTimeout();
       if (done) break;
       size += value.byteLength;
       if (size > limit) {
@@ -73,6 +80,7 @@ export async function readBody(
     }
     return Buffer.concat(chunks, size);
   } finally {
+    clearTimeout(timer);
     reader.releaseLock();
   }
 }
@@ -105,3 +113,5 @@ export function proxyHeaders(
     skip.add(name.trim().toLowerCase());
   return Object.fromEntries([...headers].filter(([key]) => !skip.has(key)));
 }
+
+export class BodyReadTimeout extends Error {}
