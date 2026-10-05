@@ -1,3 +1,9 @@
+import {
+  sitesDomain,
+  filesHost,
+  filesOrigin,
+  validHostname,
+} from "./domains.ts";
 import { serve } from "@hono/node-server";
 import { WebSocket as AgentSocket, WebSocketServer } from "ws";
 import { openAsBlob } from "node:fs";
@@ -241,7 +247,7 @@ function showTunnel(t: Tunnel) {
   };
 }
 function fileUrl(fileId: string) {
-  return `${publicOrigin}/f/${fileId}`;
+  return `${filesOrigin()}/f/${fileId}`;
 }
 function send(ws: WebSocket, value: Wire) {
   try {
@@ -795,16 +801,24 @@ async function handleRequest(request: Request): Promise<Response> {
     const host = url.hostname.toLowerCase();
     const controlHost = new URL(publicOrigin).hostname.toLowerCase();
     const suffix = `.${baseDomain.toLowerCase()}`;
-    if (host !== controlHost && host.endsWith(suffix)) {
-      const tunnelId = host.slice(0, -suffix.length);
-      if (tunnelId.startsWith("s-")) {
-        const site = db
-          .prepare("SELECT * FROM sites WHERE id=?")
-          .get(tunnelId.slice(2)) as Site | undefined;
+    const siteSuffix = `.${sitesDomain()}`;
+    if (host !== controlHost && host.endsWith(siteSuffix)) {
+      const siteId = host.slice(0, -siteSuffix.length);
+      const site = /^s-[a-f0-9]{32}$/.test(siteId)
+        ? (db.prepare("SELECT * FROM sites WHERE id=?").get(siteId.slice(2)) as
+            Site | undefined)
+        : undefined;
+      if (
+        site ||
+        sitesDomain() !== baseDomain.toLowerCase() ||
+        siteId.startsWith("s-")
+      )
         return site
           ? await serveSite(request, site)
           : fail("Site not found.", 404);
-      }
+    }
+    if (host !== controlHost && host.endsWith(suffix)) {
+      const tunnelId = host.slice(0, -suffix.length);
       const t = db
         .prepare(
           "SELECT * FROM tunnels WHERE id=? AND kind='http' AND stopped_at IS NULL",
@@ -813,7 +827,13 @@ async function handleRequest(request: Request): Promise<Response> {
       return t ? await proxyHttp(request, t) : fail("Tunnel not found.", 404);
     }
     if (path === "/health") return json({ ok: true });
-    if (host !== controlHost) return fail("Unknown host.", 421);
+    if (host !== controlHost && host !== filesHost())
+      return fail("Unknown host.", 421);
+    if (
+      host !== controlHost &&
+      !(path.startsWith("/f/") && ["GET", "HEAD"].includes(request.method))
+    )
+      return fail("File downloads only.", 404);
     const origin = request.headers.get("origin");
     if (
       origin &&
@@ -864,14 +884,14 @@ async function handleRequest(request: Request): Promise<Response> {
           },
         },
       );
-    if (path.startsWith("/f/") && request.method === "GET") {
+    if (path.startsWith("/f/") && ["GET", "HEAD"].includes(request.method)) {
       const f = db
         .prepare("SELECT * FROM files WHERE id=? AND expires_at>?")
         .get(path.slice(3), now()) as StoredFile | null;
       if (!f) return fail("File not found or expired.", 404);
       const file = await openAsBlob(join(filesDir, f.id)).catch(() => null);
       if (!file) return fail("File unavailable.", 404);
-      return new Response(file, {
+      return new Response(request.method === "HEAD" ? null : file, {
         headers: {
           "content-type": f.content_type,
           "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(f.name)}`,
@@ -892,6 +912,8 @@ async function handleRequest(request: Request): Promise<Response> {
               .get() as { value: string }
           ).value === "true",
         tcp_public_host: tcpPublicHost(),
+        sites_base_domain: sitesDomain(),
+        files_public_host: filesHost(),
         tcp_port_start: tcpStart,
         tcp_port_end: tcpEnd,
         max_file_bytes: maxFile,
@@ -1205,6 +1227,8 @@ async function handleRequest(request: Request): Promise<Response> {
                 .get() as { value: string }
             ).value === "true",
           tcp_public_host: tcpPublicHost(),
+          sites_base_domain: sitesDomain(),
+          files_public_host: filesHost(),
           tcp_port_start: tcpStart,
           tcp_port_end: tcpEnd,
         });
@@ -1215,35 +1239,31 @@ async function handleRequest(request: Request): Promise<Response> {
           typeof data.registration_enabled !== "boolean"
         )
           return fail("registration_enabled must be boolean");
-        if (
-          data.tcp_public_host !== undefined &&
-          (typeof data.tcp_public_host !== "string" ||
-            data.tcp_public_host.length > 253 ||
-            !/^(?=.{1,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$/.test(
-              data.tcp_public_host,
-            ) ||
-            data.tcp_public_host
-              .split(".")
-              .some(
-                (part) =>
-                  !part ||
-                  part.length > 63 ||
-                  part.startsWith("-") ||
-                  part.endsWith("-"),
-              ))
-        )
-          return fail(
-            "tcp_public_host must be a hostname or IPv4 address without a scheme or port.",
-          );
+        for (const key of [
+          "tcp_public_host",
+          "sites_base_domain",
+          "files_public_host",
+        ]) {
+          if (data[key] !== undefined && !validHostname(data[key]))
+            return fail(
+              `${key} must be a hostname without a scheme, wildcard or port.`,
+            );
+        }
         db.transaction(() => {
           if (data.registration_enabled !== undefined)
             db.prepare(
               "UPDATE settings SET value=? WHERE key='registration_enabled'",
             ).run(String(data.registration_enabled));
-          if (data.tcp_public_host !== undefined)
-            db.prepare(
-              "INSERT INTO settings VALUES('tcp_public_host',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            ).run(String(data.tcp_public_host).toLowerCase());
+          for (const key of [
+            "tcp_public_host",
+            "sites_base_domain",
+            "files_public_host",
+          ]) {
+            if (data[key] !== undefined)
+              db.prepare(
+                "INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+              ).run(key, String(data[key]).toLowerCase());
+          }
         })();
         return json(current());
       }

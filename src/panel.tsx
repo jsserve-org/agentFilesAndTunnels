@@ -85,6 +85,8 @@ type Usage = {
 type Config = {
   registration_enabled: boolean;
   tcp_public_host: string;
+  sites_base_domain: string;
+  files_public_host: string;
   tcp_port_start: number;
   tcp_port_end: number;
   max_file_bytes: number;
@@ -221,7 +223,7 @@ const pageDetails: Record<Page, { title: string; description: string }> = {
   },
   settings: {
     title: "Settings",
-    description: "Manage registration and the public TCP address.",
+    description: "Manage registration and public domains.",
   },
 };
 class ApiError extends Error {
@@ -2090,6 +2092,69 @@ function App() {
                     }
                   />
                 </div>
+              </CardContent>
+              <Separator />
+              <CardHeader>
+                <CardTitle className="text-base">Content domains</CardTitle>
+                <CardDescription>
+                  Keep hosted websites and file downloads on separate domains
+                  from the panel.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form
+                  key={
+                    workspace.config.sites_base_domain +
+                    workspace.config.files_public_host
+                  }
+                  className="space-y-4"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const fields = new FormData(event.currentTarget);
+                    void run(async () => {
+                      await api("/admin/settings", {
+                        method: "PATCH",
+                        body: JSON.stringify({
+                          sites_base_domain: fields.get("sites_base_domain"),
+                          files_public_host: fields.get("files_public_host"),
+                        }),
+                      });
+                      await refresh();
+                      notify("Content domains updated.");
+                    });
+                  }}
+                >
+                  <div className="space-y-2">
+                    <Label htmlFor="sites-domain">Website base domain</Label>
+                    <Input
+                      id="sites-domain"
+                      name="sites_base_domain"
+                      defaultValue={workspace.config.sites_base_domain}
+                      placeholder="ugsites.2oo.dev"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="files-host">File download hostname</Label>
+                    <Input
+                      id="files-host"
+                      name="files_public_host"
+                      defaultValue={workspace.config.files_public_host}
+                      placeholder="ugfiles.2oo.dev"
+                      required
+                    />
+                  </div>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    Configure wildcard DNS and an HTTPS proxy for your website
+                    domain, and a separate HTTPS proxy for your file hostname,
+                    pointing to this server. Enter hostnames without https:// or
+                    *. Changing domains updates published links immediately;
+                    website visitors will need to log in on the new domain.
+                  </p>
+                  <Button disabled={busy} type="submit">
+                    Save content domains
+                  </Button>
+                </form>
               </CardContent>
               <Separator />
               <CardHeader>

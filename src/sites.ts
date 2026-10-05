@@ -5,6 +5,7 @@ import { openAsBlob } from "node:fs";
 import { join, posix, extname } from "node:path";
 import { accountAuth } from "./auth.ts";
 import { db, id, now, type User } from "./db.ts";
+import { sitesDomain } from "./domains.ts";
 import { limitsFor, usageFor } from "./usage.ts";
 
 export type Site = {
@@ -18,7 +19,6 @@ export type Site = {
 const origin = (
   process.env.PUBLIC_ORIGIN || `http://localhost:${process.env.PORT || 3000}`
 ).replace(/\/$/, "");
-const baseDomain = process.env.BASE_DOMAIN || new URL(origin).hostname;
 const siteDirectory = join(process.env.DATA_DIR || "./data", "sites");
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -27,7 +27,7 @@ const siteCookie =
     ? "__Host-relay_site_session"
     : "relay_site_session";
 export function siteURL(site: Site) {
-  return `${new URL(origin).protocol}//s-${site.id}.${baseDomain}`;
+  return `${new URL(origin).protocol}//s-${site.id}.${sitesDomain()}`;
 }
 export function showSite(site: Site) {
   return { ...site, url: siteURL(site) };

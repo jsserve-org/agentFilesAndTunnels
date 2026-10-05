@@ -873,13 +873,14 @@ async function siteRequest(
   siteId: string,
   path: string,
   siteCookie?: string,
+  host?: string,
 ): Promise<Response> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(
       origin + path,
       {
         headers: {
-          host: `s-${siteId}.tunnel.test`,
+          host: host || `s-${siteId}.tunnel.test`,
           ...(siteCookie ? { cookie: siteCookie } : {}),
         },
       },
@@ -1137,7 +1138,9 @@ test("CLI device login saves private credentials and connects using OAuth", asyn
       /Check this code in your browser: (\S+)/.test(output),
     );
     const code = output.match(/Check this code in your browser: (\S+)/)?.[1];
-    expect((await request(`/api/auth/device?user_code=${code}`)).status).toBe(200);
+    expect((await request(`/api/auth/device?user_code=${code}`)).status).toBe(
+      200,
+    );
     expect(
       (await request("/api/auth/device/approve", "POST", { userCode: code }))
         .status,
@@ -1215,4 +1218,89 @@ test("CLI device login saves private credentials and connects using OAuth", asyn
     login.kill();
     await exited;
   }
+});
+
+test("separate content domains serve sites and files without exposing panel APIs", async () => {
+  const before = (await (await request("/api/admin/settings")).json()) as {
+    sites_base_domain: string;
+    files_public_host: string;
+  };
+  expect(
+    (
+      await request("/api/admin/settings", "PATCH", {
+        sites_base_domain: "*.ugsites.2oo.dev",
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await request("/api/admin/settings", "PATCH", {
+        sites_base_domain: "ugsites.2oo.dev",
+        files_public_host: "ugfiles.2oo.dev",
+      })
+    ).status,
+  ).toBe(200);
+  const deployed = await deploySite({
+    "index.html": strToU8("Separate website domain"),
+  });
+  const site = (await deployed.json()) as { id: string; url: string };
+  expect(site.url).toBe(`http://s-${site.id}.ugsites.2oo.dev`);
+  expect(
+    await (
+      await siteRequest(site.id, "/", undefined, `s-${site.id}.ugsites.2oo.dev`)
+    ).text(),
+  ).toContain("Separate website domain");
+  expect(
+    (
+      await siteRequest(
+        site.id,
+        "/api/me",
+        cookie,
+        `s-${site.id}.ugsites.2oo.dev`,
+      )
+    ).status,
+  ).toBe(404);
+  expect((await siteRequest(site.id, "/", undefined)).status).toBe(404);
+  await request(`/api/sites/${site.id}`, "PATCH", { visibility: "login" });
+  expect(
+    (await siteRequest(site.id, "/", undefined, `s-${site.id}.ugsites.2oo.dev`))
+      .status,
+  ).toBe(303);
+  const login = (await (
+    await request(`/api/sites/${site.id}/login`, "POST", {})
+  ).json()) as { url: string };
+  expect(new URL(login.url).hostname).toBe(`s-${site.id}.ugsites.2oo.dev`);
+  const form = new FormData();
+  form.set("file", new File(["Dedicated file domain"], "domain.txt"));
+  const uploaded = (await (
+    await fetch(origin + "/api/files", {
+      method: "POST",
+      headers: { cookie },
+      body: form,
+    })
+  ).json()) as { id: string; url: string };
+  expect(uploaded.url).toBe(`http://ugfiles.2oo.dev/f/${uploaded.id}`);
+  expect(
+    await (
+      await siteRequest("", `/f/${uploaded.id}`, undefined, "ugfiles.2oo.dev")
+    ).text(),
+  ).toBe("Dedicated file domain");
+  expect(
+    (await siteRequest("", "/api/me", cookie, "ugfiles.2oo.dev")).status,
+  ).toBe(404);
+  expect(
+    (await siteRequest("", "/", undefined, "ugfiles.2oo.dev")).status,
+  ).toBe(404);
+  serverProcess.kill();
+  await serverProcess.exited;
+  await startServer();
+  const persisted = (await (await request("/api/admin/settings")).json()) as {
+    sites_base_domain: string;
+    files_public_host: string;
+  };
+  expect(persisted.sites_base_domain).toBe("ugsites.2oo.dev");
+  expect(persisted.files_public_host).toBe("ugfiles.2oo.dev");
+  await request(`/api/sites/${site.id}`, "DELETE");
+  await request(`/api/files/${uploaded.id}`, "DELETE");
+  await request("/api/admin/settings", "PATCH", before);
 });

@@ -250,3 +250,11 @@ Public sites need no login. Protected sites accept any registered Relay account,
 REST: GET/POST /api/sites, GET/PATCH/DELETE /api/sites/:id, POST /api/sites/:id/login (browser session). Upload multipart file (ZIP), name and visibility (login/public). Administrators use GET /api/admin/resources and DELETE /api/admin/sites/:id to moderate. Other moderation collections are tunnels, files, agents and keys. Create users with POST /api/admin/users; PATCH /api/admin/users/:id/limits accepts storage_bytes and tunnels.
 
 MCP tools: list_tunnels, create_tunnel, stop_tunnel, list_files, upload_file, list_sites, deploy_site, delete_site. Discover schemas with tools/list. Deploy accepts a ZIP as base64. CLI commands: deploy, sites, delete-site.
+
+### Separate website and file domains
+
+In **Admin → Settings → Content domains**, set the website base domain to `ugsites.2oo.dev` (without `*.`) and the file download hostname to `ugfiles.2oo.dev`. These database settings persist across restarts and can be changed later. Environment defaults are `SITES_BASE_DOMAIN` and `FILES_PUBLIC_HOST`; if unset, existing installations keep their previous domains until configured in the panel.
+
+Configure DNS for `*.ugsites.2oo.dev` and `ugfiles.2oo.dev` to reach Nginx Proxy Manager. Add an HTTPS proxy host for each, forwarding to the Relay LXC on port 3000. The wildcard website proxy needs a matching wildcard certificate (typically using a DNS challenge). Preserve the original Host header. Your panel and HTTP tunnel domains keep their existing proxy hosts.
+
+Sites are published as `s-ID.ugsites.2oo.dev`; file links use `https://ugfiles.2oo.dev/f/ID`. The file hostname serves downloads only, without the platform panel or APIs. Existing panel-domain file links remain valid until expiry. Changing the website domain moves site URLs; visitors must log in on the new hostname. The login approval still happens on the panel domain through Better Auth's site-bound handoff.
