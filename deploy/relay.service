@@ -1,0 +1,26 @@
+[Unit]
+Description=Relay desk tunnel and file server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+WorkingDirectory=/opt/relay
+EnvironmentFile=/etc/relay.env
+Environment=DATA_DIR=/var/lib/relay
+ExecStart=/usr/local/bin/bun /opt/relay/src/server.ts
+Restart=on-failure
+RestartSec=3
+StateDirectory=relay
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/relay
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

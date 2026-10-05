@@ -1,0 +1,20 @@
+{
+  "name": "agent-tunnels-and-files",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/cli.ts --target bun --outfile dist/relay.js && bun build src/panel.ts --target browser --outfile dist/panel.js --minify",
+    "start": "bun src/server.ts",
+    "cli": "bun src/cli.ts",
+    "check": "bunx tsc --noEmit && bunx tsc -p tsconfig.panel.json --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@better-auth/api-key": "^1.7.7",
+    "better-auth": "^1.7.7"
+  }
+}

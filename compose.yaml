@@ -1,0 +1,32 @@
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in .env}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Generate BETTER_AUTH_SECRET and set it in .env}
+      BASE_DOMAIN: ${BASE_DOMAIN:?Set BASE_DOMAIN in .env}
+      TCP_PUBLIC_HOST: ${TCP_PUBLIC_HOST:?Set TCP_PUBLIC_HOST in .env}
+      TCP_PORT_START: ${TCP_PORT_START:-20000}
+      TCP_PORT_END: ${TCP_PORT_END:-20099}
+      FILE_RETENTION_HOURS: ${FILE_RETENTION_HOURS:-72}
+      MAX_FILE_BYTES: ${MAX_FILE_BYTES:-104857600}
+      MAX_USER_STORAGE_BYTES: ${MAX_USER_STORAGE_BYTES:-1073741824}
+    volumes:
+      - relay-data:/data
+    ports:
+      - "3000:3000"
+      - "${TCP_PORT_START:-20000}-${TCP_PORT_END:-20099}:${TCP_PORT_START:-20000}-${TCP_PORT_END:-20099}/tcp"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  relay-data:
