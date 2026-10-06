@@ -528,6 +528,9 @@ function App() {
   );
   const [verifiedCode, setVerifiedCode] = React.useState<string | null>(null);
   const [siteAccess, setSiteAccess] = React.useState<Site | null>(null);
+  const [siteLoginLoading, setSiteLoginLoading] = React.useState(
+    () => Boolean(new URLSearchParams(location.search).get("site_login")),
+  );
   const [authMode, setAuthMode] = React.useState<"login" | "register">("login");
   const notify = (message: string, error = false) =>
     error ? toast.error(message, { duration: 8000 }) : toast.success(message);
@@ -582,10 +585,15 @@ function App() {
   }, [refreshAdmin]);
   React.useEffect(() => {
     const siteId = new URLSearchParams(location.search).get("site_login");
-    if (workspace && siteId)
-      api<Site>(`/sites/${siteId}`)
-        .then(setSiteAccess)
-        .catch((error) => notify(error.message, true));
+    if (!siteId) {
+      setSiteLoginLoading(false);
+      return;
+    }
+    if (!workspace) return;
+    api<Site>(`/sites/${siteId}`)
+      .then(setSiteAccess)
+      .catch((error) => notify(error.message, true))
+      .finally(() => setSiteLoginLoading(false));
   }, [workspace?.me.user.id]);
   React.useEffect(() => {
     const handler = () => {
@@ -660,14 +668,22 @@ function App() {
       <div className="flex min-h-screen items-center justify-center">
         <main className="flex w-full items-center justify-center p-6">
           <div className="w-full max-w-sm">
-            <div className="mb-10 flex items-center gap-2 font-semibold">
-              Relay
-            </div>
+            {!new URLSearchParams(location.search).get("site_login") && (
+              <div className="mb-10 flex items-center gap-2 font-semibold">
+                Relay
+              </div>
+            )}
             <h1 className="text-2xl font-semibold">
-              {authMode === "login" ? "Welcome back" : "Create your account"}
+              {new URLSearchParams(location.search).get("site_login")
+                ? "Sign in to continue"
+                : authMode === "login"
+                  ? "Welcome back"
+                  : "Create your account"}
             </h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              {userCode
+              {new URLSearchParams(location.search).get("site_login")
+                ? "Sign in with your Relay account to open this protected site."
+                : userCode
                 ? "Log in to review the agent's authorization request."
                 : authMode === "login"
                   ? "Log in to manage your tunnels, files, and agents."
@@ -740,6 +756,51 @@ function App() {
               </p>
             )}
           </div>
+        </main>
+      </div>
+    );
+  if (siteLoginLoading || siteAccess)
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6">
+        <main className="w-full max-w-md">
+          {siteLoginLoading ? (
+            <div className="flex items-center justify-center gap-3 text-sm text-muted-foreground">
+              <LoaderCircle className="size-5 animate-spin" />
+              Loading protected site…
+            </div>
+          ) : siteAccess ? (
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle>Continue to {siteAccess.name}</CardTitle>
+                <CardDescription>
+                  You are signed in. Continue to open this protected site.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button
+                  className="w-full"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      const redirect = await post<{ url: string }>(
+                        `/sites/${siteAccess.id}/login`,
+                        {
+                          return_path:
+                            new URLSearchParams(location.search).get(
+                              "return_path",
+                            ) || "/",
+                        },
+                      );
+                      location.assign(redirect.url);
+                    })
+                  }
+                >
+                  Continue to site
+                  <ArrowUpRight className="ml-2 size-4" />
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
         </main>
       </div>
     );
@@ -1166,44 +1227,6 @@ function App() {
             </div>
             {pageAction}
           </div>
-          {siteAccess && (
-            <Card className="mb-6 border-blue-200 shadow-none">
-              <CardHeader>
-                <CardTitle className="text-base">
-                  Continue to {siteAccess.name}
-                </CardTitle>
-                <CardDescription>
-                  Use your Relay account to open this site. It can read your
-                  name and email while you are signed in.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p className="mb-4 break-all font-mono text-xs text-muted-foreground">
-                  {siteAccess.url}
-                </p>
-                <Button
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      const redirect = await post<{ url: string }>(
-                        `/sites/${siteAccess.id}/login`,
-                        {
-                          return_path:
-                            new URLSearchParams(location.search).get(
-                              "return_path",
-                            ) || "/",
-                        },
-                      );
-                      location.assign(redirect.url);
-                    })
-                  }
-                >
-                  Continue to site
-                  <ArrowUpRight className="ml-2 size-4" />
-                </Button>
-              </CardContent>
-            </Card>
-          )}
           {active === "overview" && (
             <div className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
