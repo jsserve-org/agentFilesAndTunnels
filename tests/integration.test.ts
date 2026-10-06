@@ -329,8 +329,8 @@ test("files last at least 72 hours and MCP can upload and list", async () => {
       (await (await rpc("tools/list")).json()) as {
         result: { tools: unknown[] };
       }
-    ).result.tools,
-  ).toHaveLength(8);
+  ).result.tools,
+  ).toHaveLength(9);
   const result = (await (
     await rpc("tools/call", {
       name: "upload_file",
