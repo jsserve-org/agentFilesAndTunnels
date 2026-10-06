@@ -1014,6 +1014,7 @@ async function handleRequest(request: Request): Promise<Response> {
           "content-type": f.content_type,
           "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(f.name)}`,
           "cache-control": "private, no-store",
+          "access-control-allow-origin": "*",
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         },
