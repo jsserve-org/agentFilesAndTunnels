@@ -1037,6 +1037,7 @@ function App() {
             {admin && <TableHead>Owner</TableHead>}
             <TableHead>Access</TableHead>
             <TableHead>Size</TableHead>
+            <TableHead>Uploaded</TableHead>
             <TableHead className="text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -1064,6 +1065,9 @@ function App() {
                 </TableCell>
                 <TableCell className="font-mono text-xs">
                   {bytes(site.size)}
+                </TableCell>
+                <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                  {new Date(site.created_at).toLocaleDateString()}
                 </TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1">

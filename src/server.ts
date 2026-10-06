@@ -25,6 +25,7 @@ import {
 import { page } from "./ui.ts";
 import {
   createSite,
+  updateSite,
   deleteSite,
   serveSite,
   showSite,
@@ -710,6 +711,20 @@ async function mcp(request: Request, user: Principal) {
           },
         },
         {
+          name: "update_site",
+          description: "Replace the files for an existing hosted site without changing its URL",
+          inputSchema: {
+            type: "object",
+            properties: {
+              site_id: { type: "string" },
+              name: { type: "string" },
+              content_base64: { type: "string" },
+              visibility: { type: "string", enum: ["public", "login"] },
+            },
+            required: ["site_id", "content_base64"],
+          },
+        },
+        {
           name: "delete_site",
           description: "Permanently delete a hosted site and its files",
           inputSchema: {
@@ -794,6 +809,31 @@ async function mcp(request: Request, user: Principal) {
             method: "POST",
             body: form,
           }),
+          user,
+        );
+      } catch (error) {
+        if (error instanceof SiteError) output = { error: error.message };
+        else throw error;
+      }
+    }
+  } else if (name === "update_site") {
+    const siteId = String(args.site_id || "");
+    const site = db
+      .prepare("SELECT * FROM sites WHERE id=? AND user_id=?")
+      .get(siteId, user.id) as Site | undefined;
+    const encoded = typeof args.content_base64 === "string" ? args.content_base64 : "";
+    if (!site) output = { error: "Site not found." };
+    else if (!encoded || encoded.length > Math.ceil((100 * 1024 ** 2 * 4) / 3))
+      output = { error: "Provide base64 ZIP content below 100 MB." };
+    else {
+      const form = new FormData();
+      form.set("file", new Blob([Buffer.from(encoded, "base64")]), "site.zip");
+      if (typeof args.name === "string") form.set("name", args.name);
+      if (typeof args.visibility === "string") form.set("visibility", args.visibility);
+      try {
+        output = await updateSite(
+          new Request(publicOrigin + `/api/sites/${siteId}`, { method: "PUT", body: form }),
+          site,
           user,
         );
       } catch (error) {
@@ -1134,6 +1174,8 @@ async function handleRequest(request: Request): Promise<Response> {
             await siteLogin(request, site, (await body(request)).return_path),
           );
         if (site.user_id !== user.id) return fail("Site not found.", 404);
+        if (request.method === "PUT")
+          return json(await updateSite(request, site, user));
         if (request.method === "DELETE") {
           await deleteSite(site);
           return json({ ok: true });

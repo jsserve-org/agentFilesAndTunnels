@@ -103,7 +103,8 @@ Commands:
   list                             List active tunnel reservations
   stop TUNNEL_ID                   Close a tunnel and all its connections
   upload FILE_PATH [--permanent]   Upload for 72 hours, or keep until deleted
-  deploy ZIP --name NAME            Host a static site (login required by default)
+  deploy ZIP --name NAME            Host a static site (use --site ID to update)
+  update-site SITE_ID ZIP           Replace a site's files without changing its URL
   sites                            List hosted sites
   delete-site SITE_ID               Delete a hosted site and its files
 
@@ -235,22 +236,41 @@ stop and upload; an agent token can manage only its own tunnels.`);
   if (command === "deploy") {
     const path = args[1],
       name = opt("name"),
-      visibility = opt("visibility", "login");
-    if (!path || !name || !["login", "public"].includes(visibility || ""))
+      visibility = opt("visibility"),
+      siteId = opt("site");
+    if (
+      !path ||
+      (!name && !siteId) ||
+      (visibility !== undefined && !["login", "public"].includes(visibility))
+    )
       throw new Error(
-        "Usage: deploy ZIP --name NAME [--visibility login|public]",
+        "Usage: deploy ZIP --name NAME [--visibility login|public] [--site SITE_ID]",
       );
     const form = new FormData();
-    form.set("name", name);
-    form.set("visibility", visibility!);
+    if (name) form.set("name", name);
+    if (siteId) {
+      if (visibility) form.set("visibility", visibility);
+    } else form.set("visibility", visibility || "login");
     form.set("file", await openAsBlob(path), "site.zip");
     console.log(
       JSON.stringify(
-        await api("/sites", { method: "POST", body: form }),
+        await api(siteId ? `/sites/${siteId}` : "/sites", {
+          method: siteId ? "PUT" : "POST",
+          body: form,
+        }),
         null,
         2,
       ),
     );
+    return;
+  }
+  if (command === "update-site") {
+    const siteId = args[1], path = args[2];
+    if (!siteId || !/^[a-f0-9]{32}$/.test(siteId) || !path)
+      throw new Error("Usage: update-site SITE_ID ZIP");
+    const form = new FormData();
+    form.set("file", await openAsBlob(path), "site.zip");
+    console.log(JSON.stringify(await api(`/sites/${siteId}`, { method: "PUT", body: form }), null, 2));
     return;
   }
   if (command === "create") {

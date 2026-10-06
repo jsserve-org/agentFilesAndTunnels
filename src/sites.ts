@@ -1,6 +1,6 @@
 import { Unzip, UnzipInflate } from "fflate";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile, rm, stat } from "node:fs/promises";
+import { mkdir, writeFile, rm, stat, rename } from "node:fs/promises";
 import { openAsBlob } from "node:fs";
 import { join, posix, extname } from "node:path";
 import { accountAuth } from "./auth.ts";
@@ -192,6 +192,60 @@ export async function createSite(request: Request, user: User) {
     throw error;
   }
   return showSite(site);
+}
+
+export async function updateSite(request: Request, site: Site, user: User) {
+  if (site.user_id !== user.id) throw new SiteError("Site not found.", 404);
+  const form = await request.formData();
+  const archive = form.get("file");
+  const name = form.get("name");
+  const visibility = form.get("visibility") || site.visibility;
+  if (
+    !(archive instanceof File) ||
+    (name !== null && (typeof name !== "string" || !name.trim())) ||
+    (typeof name === "string" && name.length > 100) ||
+    !["public", "login"].includes(String(visibility))
+  )
+    throw new SiteError("Provide a ZIP file and public or login visibility.");
+  if (archive.size > 100 * 1024 ** 2)
+    throw new SiteError("ZIP exceeds the 100 MB upload limit.", 413);
+  const available = Math.min(
+    100 * 1024 ** 2,
+    limitsFor(user.id).storage_bytes - usageFor(user.id).storage_bytes + site.size,
+  );
+  if (available <= 0) throw new SiteError("Account storage limit reached.", 413);
+  let extracted: ReturnType<typeof unzipSite>;
+  try {
+    extracted = unzipSite(new Uint8Array(await archive.arrayBuffer()), available);
+  } catch (error) {
+    if (error instanceof SiteError) throw error;
+    throw new SiteError("Invalid ZIP archive.");
+  }
+  const tempDirectory = join(siteDirectory, `.tmp-${site.id}-${id()}`);
+  try {
+    for (const [path, bytes] of extracted.files) {
+      const destination = join(tempDirectory, path);
+      await mkdir(join(destination, ".."), { recursive: true });
+      await writeFile(destination, bytes);
+    }
+    await rm(join(siteDirectory, site.id), { recursive: true, force: true });
+    await rename(tempDirectory, join(siteDirectory, site.id));
+    db.prepare("UPDATE sites SET name=?, visibility=?, size=? WHERE id=?").run(
+      typeof name === "string" ? name.trim() : site.name,
+      visibility,
+      extracted.total,
+      site.id,
+    );
+  } catch (error) {
+    await rm(tempDirectory, { recursive: true, force: true });
+    throw error;
+  }
+  return showSite({
+    ...site,
+    name: typeof name === "string" ? name.trim() : site.name,
+    visibility: visibility as Site["visibility"],
+    size: extracted.total,
+  });
 }
 
 export async function deleteSite(site: Site) {
