@@ -119,6 +119,7 @@ const tcpSockets = new Map<
     acknowledgements: number;
   }
 >();
+const webSockets = new Map<string, { socket: AgentSocket; agentId: string }>();
 const json = (
   value: unknown,
   status = 200,
@@ -276,6 +277,11 @@ function send(ws: WebSocket, value: Wire) {
 }
 function closeAgent(agentId: string) {
   connections.delete(agentId);
+  for (const [streamId, stream] of webSockets)
+    if (stream.agentId === agentId) {
+      stream.socket.close(1012, "Agent disconnected");
+      webSockets.delete(streamId);
+    }
   for (const [key, value] of tcpSockets)
     if (value.agentId === agentId) {
       value.socket.destroy();
@@ -566,8 +572,6 @@ function offlinePage() {
 async function proxyHttp(request: Request, t: Tunnel) {
   const ws = connections.get(t.agent_id);
   if (!ws) return offlinePage();
-  if (request.headers.get("upgrade")?.toLowerCase() === "websocket")
-    return fail("Use a TCP tunnel for WebSocket services.", 501);
   if (
     [...pending.values()].filter((p) => p.agentId === t.agent_id).length >= 64
   )
@@ -1610,6 +1614,14 @@ const socketHandlers = {
       }
       return;
     }
+    if (data.id && (data.type === "ws_data" || data.type === "ws_close")) {
+      const stream = webSockets.get(data.id);
+      if (!stream || stream.agentId !== ws.data.agentId) return;
+      if (data.type === "ws_data" && data.body)
+        stream.socket.send(Buffer.from(data.body, "base64"));
+      if (data.type === "ws_close") stream.socket.close();
+      return;
+    }
     if (!data.id) return;
     const stream = tcpSockets.get(data.id);
     if (stream?.agentId !== ws.data.agentId) return;
@@ -1659,12 +1671,31 @@ const sockets = new WebSocketServer({
   maxPayload: MAX_FRAME_BYTES,
   perMessageDeflate: false,
 });
+const publicSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_HTTP_BODY, perMessageDeflate: false });
 server.on("upgrade", (incoming, socket, head) => {
   const reject = (status: number) => {
     socket.end("HTTP/1.1 " + status + " Rejected\r\nConnection: close\r\n\r\n");
   };
   (async () => {
     const url = new URL(incoming.url || "/", "http://" + incoming.headers.host);
+    const host = (incoming.headers.host || "").split(":")[0].toLowerCase();
+    const tunnelSuffix = `.${tunnelsDomain()}`;
+    if (host.endsWith(tunnelSuffix)) {
+      const slug = host.slice(0, -tunnelSuffix.length);
+      const tunnel = db.prepare("SELECT * FROM tunnels WHERE (public_slug=? OR id=?) AND kind='http' AND stopped_at IS NULL").get(slug, slug) as Tunnel | undefined;
+      const agentSocket = tunnel && connections.get(tunnel.agent_id);
+      if (!tunnel || !agentSocket) { reject(404); return; }
+      publicSockets.handleUpgrade(incoming, socket, head, (raw) => {
+        const streamId = id();
+        const browser = raw as AgentSocket;
+        webSockets.set(streamId, { socket: browser, agentId: tunnel.agent_id });
+        send(agentSocket, { type: "ws_open", id: streamId, tunnelId: tunnel.id, path: url.pathname + url.search });
+        browser.on("message", (message) => send(agentSocket, { type: "ws_data", id: streamId, body: Buffer.from(message as Buffer).toString("base64") }));
+        browser.on("close", () => { webSockets.delete(streamId); send(agentSocket, { type: "ws_close", id: streamId }); });
+        browser.on("error", () => browser.close());
+      });
+      return;
+    }
     if (
       url.hostname !== new URL(publicOrigin).hostname ||
       url.pathname !== "/api/agent/connect"

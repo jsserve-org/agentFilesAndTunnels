@@ -337,6 +337,7 @@ async function connectLoop() {
       // Fetch before opening the socket so handlers are installed before any frames arrive.
       const cache = new Map((await tunnels()).map((t) => [t.id, t]));
       const streams = new Map<string, Socket>();
+      const webStreams = new Map<string, WebSocket>();
       const acknowledgements = new Map<string, number>();
       const wsUrl = new URL(`${server}/api/agent/connect`);
       wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
@@ -378,6 +379,8 @@ async function connectLoop() {
           clearInterval(heartbeat);
           for (const socket of streams.values()) socket.destroy();
           streams.clear();
+          for (const socket of webStreams.values()) socket.close();
+          webStreams.clear();
           if (event.code === 4000 || event.code === 4001) {
             replaced = true;
             console.log(event.reason);
@@ -409,6 +412,32 @@ async function connectLoop() {
         };
       });
       async function handleFrame(frame: Frame) {
+        if (frame.type === "ws_open" && frame.id && frame.tunnelId) {
+          const t = await getTunnel(frame.tunnelId);
+          if (!t || t.kind !== "http") throw new Error("Tunnel no longer exists.");
+          const host = t.local_host === "::1" ? "[::1]" : t.local_host;
+          if (!frame.path?.startsWith("/")) throw new Error("Invalid WebSocket path.");
+          const local = new WebSocket(`ws://${host}:${t.local_port}${frame.path}`);
+          webStreams.set(frame.id, local);
+          local.onopen = () => {};
+          local.onmessage = (event) => {
+            const bytes = Buffer.isBuffer(event.data) ? event.data : Buffer.from(String(event.data));
+            send({ type: "ws_data", id: frame.id, body: bytes.toString("base64") });
+          };
+          local.onerror = () => { send({ type: "ws_close", id: frame.id }); local.close(); };
+          local.onclose = () => { webStreams.delete(frame.id!); send({ type: "ws_close", id: frame.id }); };
+          return;
+        }
+        if (frame.type === "ws_data" && frame.id && frame.body) {
+          const local = webStreams.get(frame.id);
+          if (local?.readyState === WebSocket.OPEN) local.send(Buffer.from(frame.body, "base64"));
+          return;
+        }
+        if (frame.type === "ws_close" && frame.id) {
+          webStreams.get(frame.id)?.close();
+          webStreams.delete(frame.id);
+          return;
+        }
         if (frame.type === "http_request" && frame.id && frame.tunnelId) {
           const t = await getTunnel(frame.tunnelId);
           if (!t || t.kind !== "http")
